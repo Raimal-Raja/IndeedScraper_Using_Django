@@ -125,24 +125,15 @@ setx PATH "%PATH%;C:\path\to\webdriver"
 ```
 
 ### Required Packages
-```txt
-- **`bs4 (BeautifulSoup)`**: Used for parsing HTML and extracting data from web pages.
-- **`urllib.parse (urljoin, quote_plus)`**: Assists in constructing URLs dynamically.
-- **`time`**: Introduced for implementing request delays.
-- **`logging`**: Enables detailed logging of actions and errors.
-- **`dataclasses (dataclass)`**: Used for creating structured objects to store job data.
-- **`typing (Dict, List, Optional)`**: Provides type hints for better code readability and debugging.
-- **`selenium.common.exceptions (TimeoutException)`**: Handles timeout exceptions during Selenium operations.
-- **`undetected_chromedriver (uc)`**: Bypasses bot detection during Selenium operations.
-- **`requests`**: Facilitates HTTP requests for fetching web content.
-- **`fake_useragent (UserAgent)`**: Generates random user agents to avoid detection.
-- **`selenium.webdriver.common.by (By)`**: Helps locate web elements for interaction.
-- **`selenium.webdriver.support.ui (WebDriverWait)`**: Introduces waits to handle dynamic loading.
-- **`selenium.webdriver.support.expected_conditions (EC)`**: Specifies conditions for Selenium to wait on.
-- **`selenium.webdriver (webdriver)`**: Core library for Selenium WebDriver operations.
-- **`selenium.webdriver.chrome.options (Options)`**: Configures Chrome WebDriver options.
-- **`selenium.webdriver.chrome.service (Service)`**: Manages Chrome WebDriver service operations.
-- **`webdriver_manager.chrome (ChromeDriverManager)`**: Automates ChromeDriver installation and setup.
+```txtbeautifulsoup4==4.12.2
+urllib3==2.0.4
+selenium==4.11.2
+undetected-chromedriver==3.4.6
+fake-useragent==1.2.0
+requests==2.31.0
+dataclasses==0.6
+typing-extensions==4.8.0
+webdriver-manager==4.0.0
 ```
 
 ## 📚 Extended Project Structure
