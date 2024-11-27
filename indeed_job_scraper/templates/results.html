@@ -1,0 +1,86 @@
+{% extends 'base.html' %}
+
+{% block content %}
+<!-- Scraping Section -->
+<section class="container my-5">
+    <div class="row justify-content-center">
+        <div class="col-md-8">
+            <div class="card">
+                <div class="card-body">
+                    <h2 class="text-center mb-4">Scrape Indeed Job Data</h2>
+                    <form id="scrapeForm" method="POST" action="{% url 'scrape_jobs' %}">
+                        {% csrf_token %}
+                        <div class="mb-3">
+                            <label for="id_keyword" class="form-label">Job Keyword</label>
+                            {{ form.keyword.errors }}
+                            <input type="text" name="keyword" class="form-control" 
+                                   id="id_keyword" placeholder="e.g., Python Developer" 
+                                   required maxlength="100">
+                        </div>
+                        <div class="mb-3">
+                            <label for="id_country" class="form-label">Country</label>
+                            {{ form.country.errors }}
+                            <select name="country" class="form-control" id="id_country" required>
+                                {% for value, label in form.country.field.choices %}
+                                    <option value="{{ value }}">{{ label }}</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                        <div class="text-center">
+                            <button type="submit" class="btn btn-primary" id="startScrapingBtn">
+                                <i class="fas fa-search me-2"></i>Start Scraping
+                            </button>
+                        </div>
+                    </form>
+
+                    <div id="logging-area" class="mt-4" style="display: none;">
+                        <h5>Scraping Progress:</h5>
+                        <div id="log-content"></div>
+                    </div>
+
+                    {% if total_jobs %}
+                    <div class="text-center mt-4">
+                        <h4>Scraping Complete!</h4>
+                        <p>Found {{ total_jobs }} jobs for "{{ keyword }}" in {{ country }}</p>
+                        <a href="{% url 'download_csv' keyword country %}" class="btn btn-success">
+                            <i class="fas fa-download me-2"></i>Download Results
+                        </a>
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+{% endblock %}
+
+{% block extra_js %}
+<script>
+document.getElementById('scrapeForm').addEventListener('submit', function(e) {
+    e.preventDefault();
+    const form = this;
+    const loggingArea = document.getElementById('logging-area');
+    const logContent = document.getElementById('log-content');
+    
+    loggingArea.style.display = 'block';
+    logContent.innerHTML = '<div>Starting scraping process...</div>';
+    
+    fetch(form.action, {
+        method: 'POST',
+        body: new FormData(form),
+        headers: {
+            'X-Requested-With': 'XMLHttpRequest'
+        }
+    })
+    .then(response => response.json())
+    .then(data => {
+        logContent.innerHTML += `<div>Found ${data.total_jobs} jobs for "${data.keyword}" in ${data.country}</div>`;
+        window.location.href = `/download/${data.keyword}/${data.country}/`;
+    })
+    .catch(error => {
+        logContent.innerHTML += `<div class="text-danger">Error: ${error.message}</div>`;
+    });
+});
+</script>
+{% endblock %}

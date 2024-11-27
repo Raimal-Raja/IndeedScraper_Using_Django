@@ -1,0 +1,44 @@
+{% extends 'base.html' %}
+{% block content %}
+<!-- Home Section -->
+<section class="home-section">
+    <div class="hero-section d-flex align-items-center">
+        <div class="container text-center">
+            <h1 class="display-4 mb-4">Welcome to DataScraper Pro</h1>
+            <p class="lead mb-4">Your ultimate tool for scraping job data from Indeed</p>
+        </div>
+    </div>
+
+    <div class="container my-5">
+        <div class="row g-4">
+            <div class="col-md-4">
+                <div class="card feature-card">
+                    <img src="/static/images/search.jpg" class="card-img-top" alt="Search">
+                    <div class="card-body">
+                        <h5 class="card-title">Smart Search</h5>
+                        <p class="card-text">Search jobs across multiple domains with intelligent filtering.</p>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="card feature-card">
+                    <img src="/static/images/data.jpg" class="card-img-top" alt="Data">
+                    <div class="card-body">
+                        <h5 class="card-title">Data Export</h5>
+                        <p class="card-text">Export your scraped data in CSV format for easy analysis.</p>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="card feature-card">
+                    <img src="/static/images/analytics.jpg" class="card-img-top" alt="Analytics">
+                    <div class="card-body">
+                        <h5 class="card-title">Real-time Updates</h5>
+                        <p class="card-text">Monitor scraping progress with real-time logging updates.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+{% endblock %}
