@@ -136,7 +136,7 @@ typing-extensions==4.8.0
 webdriver-manager==4.0.0
 ```
 
-## 📚 Extended Project Structure
+## 📚 Project Structure
 ```
 indeed_job_scraper/
 ├── .env
@@ -273,7 +273,3 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ### Support Development
 - **Buy Me a Coffee**: [Link](https://buymeacoffee.com/your-profile)
 - **GitHub Sponsors**: [Link](https://github.com/sponsors/your-profile)
-
-## ⚠️ Disclaimer
-
-This tool is for educational purposes only. Please review and comply with Indeed's terms of service and robots.txt before scraping. Use responsibly and ethically.
