@@ -238,7 +238,7 @@ class Scraper:
             except Exception as e:
                 self.logger.error(f"Error processing {country} page {page + 1}: {str(e)}")
                 break
-            
+
     def _process_job_cards(self, soup: BeautifulSoup, base_url: str, job_search: str, country: str) -> int:
         jobs_processed = 0
         
