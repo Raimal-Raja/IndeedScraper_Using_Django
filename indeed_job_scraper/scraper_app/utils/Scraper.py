@@ -315,16 +315,41 @@ class Scraper:
         
     def _extract_company_detail_url(self, card: BeautifulSoup, base_url: str, job_url: str) -> str:
         try:
-            for selector in self.SELECTORS['company_link']:
-                company_link = card.select_one(selector)
-                if company_link and company_link.get('href'):
-                    return urljoin(base_url, company_link['href'])
-
-            if 'viewjob' in job_url:
+            # First, try to extract company name from the card
+            company_name = None
+            for selector in self.SELECTORS.get('company_name', []):
+                company_element = card.select_one(selector)
+                if company_element:
+                    company_name = company_element.get_text(strip=True)
+                    break
+            
+            # If company name not found, try alternative methods
+            if not company_name:
+                # Try extracting from selectors
+                for selector in self.SELECTORS.get('company_link', []):
+                    company_link = card.select_one(selector)
+                    if company_link:
+                        # Extract company name from the link text or title
+                        company_name = company_link.get_text(strip=True)
+                        break
+            
+            # If still no company name, try extracting from job URL
+            if not company_name and 'viewjob' in job_url:
                 company_key = job_url.split('?jk=')[-1]
+                # Fallback to job-based company URL
                 return urljoin(base_url, f"company?from=serp&company={company_key}")
-
+            
+            # Generate company URL using the new method
+            if company_name and company_name != "N/A":
+                # Create a slug similar to the get_company_url method
+                company_slug = ''.join(c for c in company_name.lower() 
+                                    if c.isalnum() or c in ' -')
+                company_slug = company_slug.replace(' ', '-')
+                company_url = f"{base_url}cmp/{quote_plus(company_slug)}"
+                return company_url
+            
             return "N/A"
+        
         except Exception as e:
             self.logger.error(f"Error extracting company detail URL: {str(e)}")
             return "N/A"
