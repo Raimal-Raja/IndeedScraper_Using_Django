@@ -6,8 +6,12 @@ from fake_useragent import UserAgent
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-import undetected_chromedriver as uc
+import undetected_chromedriver as UC
 
+# for simple chrome driver
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
 
 class CloudflareHandler:
     def __init__(self, use_proxy=False, proxy=None, captcha_api_key=None):
@@ -18,8 +22,12 @@ class CloudflareHandler:
         self._setup_driver()
 
     def _setup_driver(self):
-        options = uc.ChromeOptions()
+        # for undetected chromedriver
+        # options = uc.ChromeOptions()
 
+        # for simple chrome driver 
+        options = Options()
+        
         # Random user-agent
         options.add_argument(f"user-agent={self.ua.random}")
 
@@ -33,7 +41,17 @@ class CloudflareHandler:
         options.add_argument("--disable-dev-shm-usage")
 
         # Initialize ChromeDriver
-        self.driver = uc.Chrome(options=options)
+        # self.driver = uc.Chrome(options=options)
+        
+        # Initialize ChromeDriver using specific path
+        # self.driver = uc.Chrome(
+        #     driver_executable_path=r"C:\Users\Professor\OneDrive\Desktop\Updated_Scraper\undetected_chromedriver.exe", 
+        #     options=options
+        # )
+
+        #initialize simplle chromedriver using specific path
+        self.driver = webdriver.Chrome(service=Service(r'C:\Users\Professor\.wdm\drivers\chromedriver\win64\130.0.6723.58\chromedriver-win32\chromedriver.exe'), options=options)
+        # return self.driver
 
         # Further WebDriver stealth
         self.driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
