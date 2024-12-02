@@ -5,10 +5,14 @@ import logging
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 from selenium.common.exceptions import TimeoutException
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 import requests
-
+import random
+# imported files
 from .cloudflare_handler import CloudflareHandler
-from ..models import JobPosting
+from scraper_app.models import JobPosting
 from .duplicate_checker import DuplicateChecker
 
 @dataclass
@@ -99,7 +103,17 @@ class Scraper:
         except Exception as e:
             self.logger.error(f"Error extracting element text: {str(e)}")
             return default
-        
+    def get_page(self, url):
+        try:
+            self.driver.get(url)
+            WebDriverWait(self.driver, 20).until(
+                EC.presence_of_all_elements_located((By.CSS_SELECTOR, 'div.job_seen_beacon'))  # Wait for job cards to load
+            )
+            return self.driver.page_source
+        except Exception as e:
+            logging.error(f"Error accessing page: {str(e)}")
+            return None
+    
     def _has_next_page(self, soup: BeautifulSoup) -> Optional[str]:
         """Enhanced next page detection that returns the next page URL"""
         try:
@@ -202,6 +216,10 @@ class Scraper:
                 if not self._validate_page_content(soup, country):
                     break
                 
+                WebDriverWait(self.cf_handler.driver, 20).until(
+                EC.presence_of_all_elements_located((By.CSS_SELECTOR, 'div.job_seen_beacon'))
+            )
+                
                 jobs_processed = self._process_job_cards(soup, base_url, job_search, country)
                 if jobs_processed == 0:
                     self.logger.warning(f"No jobs processed on page {page + 1} for {country}")
@@ -220,7 +238,7 @@ class Scraper:
             except Exception as e:
                 self.logger.error(f"Error processing {country} page {page + 1}: {str(e)}")
                 break
-
+            
     def _process_job_cards(self, soup: BeautifulSoup, base_url: str, job_search: str, country: str) -> int:
         jobs_processed = 0
         
@@ -231,6 +249,10 @@ class Scraper:
                 
             for card in job_cards:
                 try:
+                    time.sleep(random.uniform(1.5, 3.0))
+                #     WebDriverWait(self, 10).until(
+                #     EC.presence_of_element_located((By.CSS_SELECTOR, selector))
+                # )
                     job_data = self._extract_job_data(card, base_url, job_search, country)
                     if job_data:
                         # Create JobPosting model instance directly
@@ -238,6 +260,7 @@ class Scraper:
                         self.total_jobs += 1
                         jobs_processed += 1
                         self.logger.info(f"Saved job: {job_posting.title} from {country}")
+                        time.sleep(random.uniform(0.5, 1.5))
                 except Exception as e:
                     self.logger.error(f"Error processing job card: {str(e)}")
                     continue
@@ -289,6 +312,32 @@ class Scraper:
         except Exception as e:
             self.logger.error(f"Error extracting job data: {str(e)}")
             return None
+        
+    def _extract_company_detail_url(self, card: BeautifulSoup, base_url: str, job_url: str) -> str:
+        try:
+            for selector in self.SELECTORS['company_link']:
+                company_link = card.select_one(selector)
+                if company_link and company_link.get('href'):
+                    return urljoin(base_url, company_link['href'])
+
+            if 'viewjob' in job_url:
+                company_key = job_url.split('?jk=')[-1]
+                return urljoin(base_url, f"company?from=serp&company={company_key}")
+
+            return "N/A"
+        except Exception as e:
+            self.logger.error(f"Error extracting company detail URL: {str(e)}")
+            return "N/A"
+    
+    def _get_job_description(self, url: str) -> Optional[str]:
+        try:
+            if html := self.cf_handler.get_page(url):
+                soup = BeautifulSoup(html, 'html.parser')
+                return self._get_element_text(soup, self.SELECTORS['job_description'])
+        except Exception as e:
+            self.logger.error(f"Failed to fetch job description: {str(e)}")
+        return None
+        
     def _extract_post_date(self, card: BeautifulSoup) -> str:
         try:
             date_text = self._get_element_text(card, self.SELECTORS['post_date'])
@@ -307,71 +356,7 @@ class Scraper:
             return time.strftime('%Y-%m-%d')
         except Exception:
             return time.strftime('%Y-%m-%d')
-    def _get_job_description(self, url: str) -> Optional[str]:
-        try:
-            if html := self.cf_handler.get_page(url):
-                soup = BeautifulSoup(html, 'html.parser')
-                return self._get_element_text(soup, self.SELECTORS['job_description'])
-        except Exception as e:
-            self.logger.error(f"Failed to fetch job description: {str(e)}")
-        return None
-    def _extract_company_detail_url(self, card: BeautifulSoup, base_url: str, job_url: str) -> str:
-        try:
-            for selector in self.SELECTORS['company_link']:
-                company_link = card.select_one(selector)
-                if company_link and company_link.get('href'):
-                    return urljoin(base_url, company_link['href'])
-
-            if 'viewjob' in job_url:
-                company_key = job_url.split('?jk=')[-1]
-                return urljoin(base_url, f"company?from=serp&company={company_key}")
-
-            return "N/A"
-        except Exception as e:
-            self.logger.error(f"Error extracting company detail URL: {str(e)}")
-            return "N/A"
-
-    def _extract_job_data(self, card: BeautifulSoup, base_url: str, job_search: str, country: str) -> Optional[Dict]:
-        try:
-            title_elem = card.select_one(self.SELECTORS['job_title'])
-            if not title_elem or 'data-jk' not in title_elem.attrs:
-                return None
-
-            job_key = title_elem['data-jk']
-            job_url = urljoin(base_url, f"viewjob?jk={job_key}")
-            
-            if JobPosting.objects.filter(job_url=job_url).exists():
-                return None
-
-            company_name = self._get_element_text(card, self.SELECTORS['company_name'])
-            location = self._get_element_text(card, self.SELECTORS['company_location'])
-            
-            company_detail_url = self._extract_company_detail_url(card, base_url, job_url)
-
-            job_desc = None
-            for retry in range(self.config.MAX_RETRIES):
-                job_desc = self._get_job_description(job_url)
-                if job_desc:
-                    break
-                time.sleep(self.config.RETRY_DELAYS[retry])
-
-            if not job_desc:
-                return None
-
-            return {
-                'post_date': self._extract_post_date(card),
-                'title': title_elem.get_text(strip=True),
-                'company_name': company_name,
-                'company_location': location,
-                'company_detail_url': company_detail_url,
-                'job_url': job_url,
-                'job_description': job_desc,
-                'search_term': job_search,
-                'country': country
-            }
-        except Exception as e:
-            self.logger.error(f"Error extracting job data: {str(e)}")
-            return None
+    
 
     def close(self) -> None:
         try:
