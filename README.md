@@ -2,11 +2,10 @@
 
 Django job-scraping application with search forms, browser-assisted extraction, database storage, and CSV downloads.
 
-## Repository guide
+## Setup and repository reference
 
-### Contents
+### Project structure
 
-- [README.md](README.md)
 - [indeed_job_scraper](indeed_job_scraper)
 - [requirements.txt](requirements.txt)
 
@@ -41,7 +40,11 @@ Live scraping depends on site permissions, browser availability, current page ma
 
 ### Validation
 
-Reviewed on 2026-10-08. Django manage.py check identified no issues. Python syntax checks passed; live bookings and live scraping were not exercised.
+Audit: 2026-10-08. Repository structure, setup instructions and description were reviewed. 21 existing Python files passed syntax checks; changed files and new regression tests were checked separately. Syntax checks do not establish full runtime correctness. External APIs, live scraping, GUI interaction, notebook training and production deployment were not comprehensively exercised.
+
+### Repository description
+
+The short GitHub description is provided in [REPOSITORY_DESCRIPTION.md](REPOSITORY_DESCRIPTION.md).
 
 ### Contributions
 
