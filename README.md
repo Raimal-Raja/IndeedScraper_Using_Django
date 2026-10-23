@@ -1,51 +1,69 @@
-# IndeedScraper Using Django
+# Indeed Job Scraper — Django
 
 Django job-scraping application with search forms, browser-assisted extraction, database storage, and CSV downloads.
 
-## Setup and repository reference
+## Project focus
 
-### Project structure
+Django application. The sections below separate the runnable entry point, source layout, prerequisites, and verification path.
 
-- [indeed_job_scraper](indeed_job_scraper)
-- [requirements.txt](requirements.txt)
+## Architecture
 
-### Getting started
+```mermaid
+flowchart TD
+    A["Search terms and country"] --> B["Scraper entry point"]
+    B --> C["HTTP or browser collection"]
+    C --> D{"Listing extracted?"}
+    D -->|Yes| E["Job records and storage"]
+    D -->|No| F["Review logs and page markup"]
+    E --> G["CSV or application results"]
+    F --> B
+```
+
+## Repository structure
+
+| Path | Purpose |
+| --- | --- |
+| [`indeed_job_scraper/`](indeed_job_scraper) | Project-specific source, resources, or learning material. |
+| [`requirements.txt`](requirements.txt) | Python dependency manifest. |
+
+## Getting started
 
 ```bash
 git clone https://github.com/Raimal-Raja/IndeedScraper_Using_Django.git
 cd IndeedScraper_Using_Django
 ```
 
-Create and activate a virtual environment, then install the project dependencies:
-
 ```bash
 python -m venv .venv
-# Linux/macOS: source .venv/bin/activate
-# Windows PowerShell: .venv\Scripts\Activate.ps1
-python -m pip install -r "requirements.txt"
+source .venv/bin/activate
 ```
 
-Run each Django project from the folder containing its manage.py file:
+On Windows PowerShell, activate the environment with `.venv\Scripts\Activate.ps1` instead.
 
 ```bash
-cd "indeed_job_scraper"
-python manage.py check
+python -m pip install -r requirements.txt
+```
+
+```bash
+cd indeed_job_scraper
 python manage.py migrate
 python manage.py runserver
 ```
 
-### Configuration and limitations
+Use the local development server for inspection. Review the project settings before deployment.
 
-Live scraping depends on site permissions, browser availability, current page markup, and anti-bot responses. Passing syntax checks does not verify live collection. Browser-handling code does not guarantee access.
+## Configuration and scope
 
-### Validation
+Live collection depends on browser availability, the current page markup, site access permissions, and the configured search inputs. Access-control or anti-bot handling is not a guarantee of collection. Inspect saved records for missing fields and duplicates.
 
-Recorded checks from the previous maintenance review (2026-10-08): 21 existing Python files passed syntax checks; changed files and new regression tests were checked separately. Syntax checks do not establish full runtime correctness. External APIs, live scraping, GUI interaction, notebook training and production deployment were not comprehensively exercised.
+## Verification
 
-### Contributions
+Use the setup commands and inspect the selected interface, example, or notebook with known inputs. This documentation review checks repository paths and dependency declarations; it does not claim fresh end-to-end execution or model-quality measurements.
 
-Describe the issue, reproduction steps, environment, and expected behavior when proposing a change. Keep generated environments, credentials, and unnecessary build artifacts out of new commits.
+## Contributing
 
-### License
+Include reproduction steps, the affected path, expected behavior, and the checks you ran. Keep credentials, generated environments, and unnecessary build artifacts out of commits.
 
-No top-level license file was found during this review.
+## License
+
+No top-level license file is currently tracked. Check reuse permissions with the repository owner.
