@@ -55,3 +55,34 @@ an empty search. Only explicit no-results text establishes an empty listing.
 Verification for these changes: 27 Django tests and 9 frontend scenarios, using
 fixtures and mocked source/browser operations. This does not establish live
 Indeed availability or bypass its source access controls.
+
+## Pagination, login-gated descriptions, and export format
+
+Both linked pagination and enabled Next buttons are followed, up to the existing
+50-page limit. Relative ?start= links preserve the /jobs path. The live display
+includes pages visited. Navigation still stops for a login wall or source access
+challenge; partial saved rows remain available.
+
+A new Selenium session does not inherit the user's normal Chrome login. Source
+login redirects are detected explicitly. When a full job description requires
+login, the scraper warns once, avoids repeatedly requesting gated detail pages,
+and retains public listing fields. A listing summary, if present, is labelled
+as a summary rather than presented as the full description. Missing descriptions
+remain blank. Dynamic public descriptions are given time to render.
+
+CSV columns in order:
+Title | Post Date | Company name | company Url | Location | Country | Job URL | Description
+
+Only company URLs actually present in listing links are used; no company URL is
+invented from a company name. Each saved database record triggers a CSV snapshot
+under indeed_job_scraper/exports (override with SCRAPER_EXPORT_DIR). Snapshot
+writes are flushed and replaced atomically, and saved records survive Stop.
+Existing rows for the same keyword and country are included in that snapshot.
+Download CSV uses the same format and regenerates the snapshot from saved data.
+
+Filenames contain safe country and keyword names followed by month_day_year in
+Pakistan time, for example united_states_python_developer_10_26_2026.csv.
+
+Validation: 33 Django regressions and 9 frontend scenarios. Live source login or
+access restrictions are not bypassed. These tests verify behavior with fixtures
+and mocks; they do not guarantee that Indeed makes full descriptions public.

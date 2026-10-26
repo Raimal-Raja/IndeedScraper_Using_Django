@@ -7,7 +7,7 @@ from .utils.Scraper import Scraper
 from .progress import create_run, get_run, update_run, stop_run, ProgressHandler, ScrapingStopped
 from uuid import uuid4, UUID
 from django.views.decorators.http import require_GET, require_POST
-import csv
+from .csv_export import export_search
 import logging
 from urllib.parse import urlencode
 from django.urls import reverse
@@ -53,7 +53,7 @@ def start_scraping(request):
         available = JobPosting.objects.filter(search_term=keyword, country=country).count()
         summary = (f"Found: {stats.get('found', 0)} | Saved: {total_jobs} | "
                    f"Duplicates: {stats.get('duplicates', 0)} | Skipped/errors: {failed_cards} | "
-                   f"Missing descriptions: {stats.get('missing_description', 0)}")
+                   f"Missing full descriptions: {stats.get('missing_description', 0)} | Pages: {stats.get('pages_visited', 0)}")
         if not total_jobs and (blocked_domains or getattr(scraper, 'errors', []) or failed_cards):
             if blocked_domains:
                 message = 'The job source blocked access. ' + summary
@@ -67,13 +67,19 @@ def start_scraping(request):
                 return JsonResponse({'error': message, 'run_id': run_id, 'stats': stats}, status=422 if failed_cards else 502)
             form.add_error(None, message)
             return render(request, 'results.html', {'form': form}, status=502)
-        if total_jobs:
+        if total_jobs and (blocked_domains or getattr(scraper, 'errors', [])):
+            message = 'Partial results saved. Some source pages were unavailable; CSV is ready to download.'
+        elif total_jobs:
             message = 'Scraping complete. CSV is ready to download.'
         elif stats.get('duplicates'):
             message = 'No new jobs: recognized listings are already saved.'
         else:
             message = 'The source returned no matching listings.'
         warning = summary if failed_cards or stats.get('missing_description') else ('Some source pages were unavailable. ' + summary if blocked_domains or getattr(scraper, 'errors', []) else '')
+        if stats.get('login_required'):
+            warning = 'Indeed requires login for full descriptions; only available listing data was retained. ' + summary
+        if stats.get('csv_errors'):
+            warning = f"CSV checkpoint errors: {stats['csv_errors']}. Jobs are saved in the database. " + warning
         result_url = download_url() if total_jobs or available else None
         update_run(run_id, status='completed', scraped=total_jobs, activity=message, warning=warning, stats=stats, available_jobs=available, download_url=result_url)
         if ajax:
@@ -121,30 +127,7 @@ def download_csv(request, keyword=None, country=None):
     if not form.is_valid():
         return JsonResponse({'error': 'Invalid download parameters.'}, status=400)
     keyword, country = form.cleaned_data['keyword'], form.cleaned_data['country']
-    jobs = JobPosting.objects.filter(
-        search_term=keyword,
-        country=country
-    )
-
-    response = HttpResponse(content_type='text/csv')
-    response['Content-Disposition'] = 'attachment; filename="jobs.csv"'
-
-    writer = csv.writer(response)
-    writer.writerow([
-        'Title', 'Company', 'Location',
-        'Job URL', 'Company URL',
-        'Post Date', 'Description'
-    ])
-
-    for job in jobs:
-        writer.writerow([
-            job.title,
-            job.company_name,
-            job.company_location,
-            job.job_url,
-            job.company_detail_url,
-            job.post_date,
-            job.job_description
-        ])
-
+    path, content = export_search(keyword, country)
+    response = HttpResponse('\ufeff' + content, content_type='text/csv; charset=utf-8')
+    response['Content-Disposition'] = f'attachment; filename="{path.name}"'
     return response

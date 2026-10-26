@@ -1,9 +1,19 @@
 from unittest.mock import patch, Mock
 from django.test import TestCase, Client, override_settings
 from django.urls import reverse
-from .utils.cloudflare_handler import CloudflareHandler
+from .utils.cloudflare_handler import CloudflareHandler, LoginRequired
+import tempfile
 
-class ScrapeResponseTests(TestCase):
+class ExportIsolationMixin:
+    def setUp(self):
+        super().setUp()
+        self.export_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.export_directory.cleanup)
+        override = override_settings(SCRAPER_EXPORT_DIR=self.export_directory.name)
+        override.enable()
+        self.addCleanup(override.disable)
+
+class ScrapeResponseTests(ExportIsolationMixin, TestCase):
     def post(self, data=None):
         return self.client.post('/scrape/', data if data is not None else {'keyword': 'Python/C++', 'country': 'United States'}, HTTP_X_REQUESTED_WITH='XMLHttpRequest')
 
@@ -79,8 +89,9 @@ class ScrapeResponseTests(TestCase):
         handler.close()
 
 
-class ProgressAndStopTests(TestCase):
+class ProgressAndStopTests(ExportIsolationMixin, TestCase):
     def setUp(self):
+        super().setUp()
         from uuid import uuid4
         self.run_id = str(uuid4())
 
@@ -176,7 +187,7 @@ class ProgressAndStopTests(TestCase):
         self.assertTrue(JobPosting.objects.filter(job_url=data['job_url']).exists())
 
 
-class ListingParsingTests(TestCase):
+class ListingParsingTests(ExportIsolationMixin, TestCase):
     def scraper(self):
         from .utils.Scraper import Scraper
         with patch.object(Scraper, '_initialize_driver'):
@@ -271,3 +282,88 @@ class ListingParsingTests(TestCase):
         self.assertIn('already saved', data['message'])
         self.assertEqual(data['available_jobs'], 1)
         self.assertContains(self.client.get(data['download_url']), 'Existing job')
+
+
+class ExportAndDescriptionTests(ExportIsolationMixin, TestCase):
+    def test_exact_columns_country_and_filename(self):
+        import csv, io
+        from datetime import datetime
+        from .csv_export import csv_filename, HEADERS
+        from .models import JobPosting
+        JobPosting.objects.create(title='Developer', post_date='2026-10-25', company_name='Company', company_location='Remote', country='United States', job_url='https://www.indeed.com/viewjob?jk=export', company_detail_url='https://www.indeed.com/cmp/company', job_description='Description', search_term='Python developer')
+        response = self.client.get('/download/', {'keyword':'Python developer', 'country':'United States'})
+        self.assertEqual(response.status_code,200)
+        rows=list(csv.reader(io.StringIO(response.content.decode('utf-8-sig'))))
+        self.assertEqual(rows[0], ['Title','Post Date','Company name','company Url','Location','Country','Job URL','Description'])
+        self.assertEqual(rows[1][5],'United States')
+        self.assertEqual(rows[1][1],'2026-10-25')
+        self.assertEqual(csv_filename('Python developer','United States',datetime(2026,10,26)), 'united_states_python_developer_10_26_2026.csv')
+        self.assertIn('united_states_python_developer_',response['Content-Disposition'])
+        from pathlib import Path
+        self.assertEqual(len(list(Path(self.export_directory.name).glob('*.csv'))),1)
+
+    def test_one_csv_is_updated_after_each_saved_job(self):
+        from pathlib import Path
+        import csv
+        from bs4 import BeautifulSoup
+        from .utils.Scraper import Scraper
+        with patch.object(Scraper,'_initialize_driver'):
+            scraper=Scraper()
+        scraper._sleep=Mock()
+        for key in ('first','second'):
+            soup=BeautifulSoup(f'<div class="job_seen_beacon"><h2 class="jobTitle"><a data-jk="{key}">Developer</a></h2></div>','html.parser')
+            with patch.object(scraper,'_get_job_description',return_value='Description'):
+                scraper._process_job_cards(soup,'https://www.indeed.com/','Python','United States')
+            files=list(Path(self.export_directory.name).glob('*.csv'))
+            self.assertEqual(len(files),1)
+            with files[0].open(encoding='utf-8-sig',newline='') as handle:
+                self.assertEqual(len(list(csv.DictReader(handle))),scraper.total_jobs)
+
+    def test_login_gated_descriptions_are_not_retried_for_every_job(self):
+        from bs4 import BeautifulSoup
+        from .utils.Scraper import Scraper
+        with patch.object(Scraper,'_initialize_driver'):
+            scraper=Scraper()
+        scraper._sleep=Mock()
+        scraper.cf_handler=Mock()
+        scraper.cf_handler.get_page.side_effect=LoginRequired('Indeed requires login')
+        for key in ('one','two'):
+            card=BeautifulSoup(f'<div data-jk="{key}"><h2 class="jobTitle"><a>Developer</a></h2><div class="job-snippet">Public listing summary</div></div>','html.parser').div
+            row=scraper._extract_job_data(card,'https://www.indeed.com/','Python','United States')
+            self.assertIn('Listing summary',row['job_description'])
+        self.assertEqual(scraper.cf_handler.get_page.call_count,1)
+        self.assertEqual(scraper.stats['login_required'],1)
+        self.assertEqual(scraper.stats['missing_description'],2)
+
+    def test_company_url_comes_from_source_not_invented_slug(self):
+        from bs4 import BeautifulSoup
+        from .utils.Scraper import Scraper
+        with patch.object(Scraper,'_initialize_driver'):
+            scraper=Scraper()
+        card=BeautifulSoup('<div><a data-testid="company-link" href="/cmp/real-employer-123">Company name</a></div>','html.parser').div
+        self.assertEqual(scraper._extract_company_detail_url(card,'https://www.indeed.com/',''), 'https://www.indeed.com/cmp/real-employer-123')
+        self.assertEqual(scraper._extract_company_detail_url(BeautifulSoup('<div>Company</div>','html.parser').div,'https://www.indeed.com/',''),'')
+
+    def test_relative_query_pagination_keeps_jobs_path(self):
+        from .utils.Scraper import Scraper
+        with patch.object(Scraper,'_initialize_driver'):
+            scraper=Scraper()
+        scraper._sleep=Mock()
+        scraper.cf_handler=Mock()
+        scraper.cf_handler.get_page.side_effect=['<div class="job_seen_beacon">one</div><a rel="next" href="?q=Python&start=10">Next</a>','<div class="job_seen_beacon">two</div>']
+        with patch.object(scraper,'_process_job_cards',return_value=0):
+            scraper._scrape_country('https://www.indeed.com/','Python','United States')
+        self.assertEqual(scraper.cf_handler.get_page.call_args.args[0],'https://www.indeed.com/jobs?q=Python&start=10')
+        self.assertEqual(scraper.stats['pages_visited'],2)
+
+    def test_button_pagination_handles_url_without_href(self):
+        from .utils.Scraper import Scraper
+        with patch.object(Scraper,'_initialize_driver'):
+            scraper=Scraper()
+        scraper._sleep=Mock()
+        scraper.cf_handler=Mock()
+        scraper.cf_handler.get_page.return_value='<div class="job_seen_beacon">one</div><button data-testid="pagination-page-next">Next</button>'
+        with patch.object(scraper,'_process_job_cards',return_value=0), patch.object(scraper,'_click_next_page',return_value=('https://www.indeed.com/jobs?start=10','<div class="job_seen_beacon">two</div>')) as click:
+            scraper._scrape_country('https://www.indeed.com/','Python','United States')
+        click.assert_called_once()
+        self.assertEqual(scraper.stats['pages_visited'],2)

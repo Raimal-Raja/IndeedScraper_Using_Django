@@ -9,7 +9,10 @@ from typing import Dict, List, Optional
 from selenium.common.exceptions import TimeoutException
 from selenium.webdriver.support.ui import WebDriverWait
 # imported files
-from .cloudflare_handler import CloudflareHandler
+from .cloudflare_handler import CloudflareHandler, LoginRequired
+from scraper_app.csv_export import export_search
+from django.conf import settings
+from selenium.webdriver.common.by import By
 from scraper_app.models import JobPosting
 from .duplicate_checker import DuplicateChecker
 from scraper_app.progress import ScrapingStopped
@@ -53,7 +56,9 @@ class Scraper:
             'a[aria-label="Next"]',
             'a[data-testid="pagination-page-next"]',
             'a[class*="pagination-next"]',
-            'a[aria-label="Next Page"]'
+            'a[aria-label="Next Page"]',
+            'a[rel="next"]',
+            'a[aria-label^="Next" i]'
         ],
         'company_link': [
             'a[data-testid="company-link"]',
@@ -77,6 +82,7 @@ class Scraper:
         self.stats = Counter()
         self.seen_job_urls = set()
         self.errors = []
+        self.detail_login_required = False
         self.blocked_domains = {}
         self._initialize_driver()
 
@@ -137,7 +143,7 @@ class Scraper:
         if current_url:
             current = int(parse_qs(urlsplit(current_url).query).get('start', ['0'])[0])
             candidates = []
-            for link in soup.select('nav[role="navigation"] a[href]'):
+            for link in soup.select('nav a[href], [data-testid*="pagination"] a[href]'):
                 try:
                     offset = int(parse_qs(urlsplit(link['href']).query).get('start', ['0'])[0])
                 except ValueError:
@@ -148,6 +154,32 @@ class Scraper:
                 return min(candidates)[1]
         return None
 
+    def _click_next_page(self, listing_url, previous_soup):
+        self._check_stop()
+        self.cf_handler.get_page(listing_url)
+        selector = 'button[data-testid="pagination-page-next"], button[aria-label^="Next" i]'
+        driver = self.cf_handler.driver
+        button = WebDriverWait(driver, 15).until(lambda browser: next((item for item in browser.find_elements(By.CSS_SELECTOR, selector) if item.is_displayed() and item.is_enabled()), None))
+        def identity(soup):
+            for value in self.SELECTORS['job_cards']:
+                cards = soup.select(value)
+                if cards:
+                    return tuple((card.get('data-jk', ''), str(card.select_one(self.SELECTORS['job_title']) or card)) for card in cards)
+            return ()
+        before = identity(previous_soup)
+        button.click()
+        def changed(browser):
+            self._check_stop()
+            soup = BeautifulSoup(browser.page_source, 'html.parser')
+            if identity(soup) and identity(soup) != before:
+                return browser.page_source
+            return None
+        try:
+            html = WebDriverWait(driver, 20).until(changed)
+            return driver.current_url, html
+        except TimeoutException:
+            return listing_url, None
+
     def _skip(self, reason, message):
         self.stats[reason] += 1
         self.logger.warning('Skipped listing (%s): %s', reason, message)
@@ -157,7 +189,7 @@ class Scraper:
                 f"Duplicates: {self.stats['duplicates']} | "
                 f"Missing title/ID: {self.stats['missing_title'] + self.stats['missing_job_key']} | "
                 f"Extraction/database errors: {self.stats['extraction_errors'] + self.stats['database_errors']} | "
-                f"Missing descriptions: {self.stats['missing_description']}")
+                f"Missing full descriptions: {self.stats['missing_description']} | Pages: {self.stats['pages_visited']}")
 
     def _validate_page_content(self, soup: BeautifulSoup, country: str) -> bool:
         try:
@@ -221,18 +253,22 @@ class Scraper:
         search_url = f"{base_url}jobs?q={quote_plus(job_search)}&l="
         current_url = search_url
         visited_pages = set()
+        preloaded_html = None
 
         while page < self.config.MAX_PAGES:
             self._check_stop()
-            if current_url in visited_pages:
+            if current_url in visited_pages and preloaded_html is None:
                 self.logger.warning("Pagination repeated a page; stopping this country")
                 break
             visited_pages.add(current_url)
             try:
                 self.logger.info(f"Processing page {page + 1} for {country}")
 
-                html = None
+                html, preloaded_html = preloaded_html, None
+                self.stats['pages_visited'] += 1
                 for retry in range(self.config.MAX_RETRIES):
+                    if html:
+                        break
                     self._check_stop()
                     html = self.cf_handler.get_page(current_url)
                     self._check_stop()
@@ -253,10 +289,17 @@ class Scraper:
 
                 next_page_url = self._has_next_page(soup, current_url)
                 if not next_page_url:
-                    self.logger.info(f"No more pages available for {country}")
-                    break
-
-                next_url = urljoin(base_url, next_page_url)
+                    button = soup.select_one('button[data-testid="pagination-page-next"], button[aria-label^="Next" i]')
+                    if button and not button.has_attr('disabled') and button.get('aria-disabled') != 'true':
+                        next_url, preloaded_html = self._click_next_page(current_url, soup)
+                        if not preloaded_html:
+                            self.logger.warning('Next-page button did not load new listings; pagination stopped')
+                            break
+                    else:
+                        self.logger.info(f"No more pagination controls available for {country}")
+                        break
+                else:
+                    next_url = urljoin(current_url, next_page_url)
                 if urlsplit(next_url).hostname != urlsplit(base_url).hostname:
                     raise RuntimeError("Pagination points outside the selected job source")
                 current_url = next_url
@@ -294,6 +337,12 @@ class Scraper:
                 self.total_jobs += 1
                 jobs_processed += 1
                 self.stats['saved'] = self.total_jobs
+                try:
+                    path, _ = export_search(job_search, country)
+                    self.logger.info('CSV checkpoint saved: %s', path)
+                except OSError as exc:
+                    self.stats['csv_errors'] += 1
+                    self.logger.warning('Job saved in the database but CSV checkpoint failed: %s', exc)
                 self.logger.info('Saved job: %s from %s. %s', job_posting.title, country, self.summary())
                 self._sleep(self.config.PAGE_DELAY)
             except ScrapingStopped:
@@ -337,16 +386,23 @@ class Scraper:
             company_detail_url = self._extract_company_detail_url(card, base_url, job_url)
 
             job_desc = None
-            for retry in range(self.config.MAX_RETRIES):
-                job_desc = self._get_job_description(job_url)
-                if job_desc:
-                    break
-                self._sleep(self.config.RETRY_DELAYS[retry])
-
+            if not self.detail_login_required:
+                for retry in range(self.config.MAX_RETRIES):
+                    self._check_stop()
+                    job_desc = self._get_job_description(job_url)
+                    if job_desc or self.detail_login_required:
+                        break
+                    self._sleep(self.config.RETRY_DELAYS[retry])
             if not job_desc:
                 self.stats['missing_description'] += 1
-                self.logger.warning("Description unavailable for %s; saving the listing with a blank description", job_url)
-                job_desc = ""
+                snippet = self._get_element_text(card, ['.job-snippet', '[data-testid="job-snippet"]'], default='')
+                if snippet:
+                    job_desc = '[Listing summary; full description unavailable] ' + snippet
+                    self.stats['partial_description'] += 1
+                else:
+                    job_desc = ''
+                reason = 'Indeed login required' if self.detail_login_required else 'description not available in the loaded page'
+                self.logger.warning('Full description unavailable (%s) for %s; listing retained', reason, job_url)
 
             return {
                 'post_date': self._extract_post_date(card),
@@ -367,54 +423,35 @@ class Scraper:
             self._skip("extraction_errors", str(e))
             return None
 
-    def _extract_company_detail_url(self, card: BeautifulSoup, base_url: str, job_url: str) -> str:
-        try:
-            # First, try to extract company name from the card
-            company_name = None
-            for selector in self.SELECTORS.get('company_name', []):
-                company_element = card.select_one(selector)
-                if company_element:
-                    company_name = company_element.get_text(strip=True)
-                    break
-
-            # If company name not found, try alternative methods
-            if not company_name:
-                # Try extracting from selectors
-                for selector in self.SELECTORS.get('company_link', []):
-                    company_link = card.select_one(selector)
-                    if company_link:
-                        # Extract company name from the link text or title
-                        company_name = company_link.get_text(strip=True)
-                        break
-
-            # If still no company name, try extracting from job URL
-            if not company_name and 'viewjob' in job_url:
-                company_key = job_url.split('?jk=')[-1]
-                # Fallback to job-based company URL
-                return urljoin(base_url, f"company?from=serp&company={company_key}")
-
-            # Generate company URL using the new method
-            if company_name and company_name != "N/A":
-                # Create a slug similar to the get_company_url method
-                company_slug = ''.join(c for c in company_name.lower()
-                                    if c.isalnum() or c in ' -')
-                company_slug = company_slug.replace(' ', '-')
-                company_url = f"{base_url}cmp/{quote_plus(company_slug)}"
-                return company_url
-
-            return "N/A"
-
-        except ScrapingStopped:
-            raise
-        except Exception as e:
-            self.logger.error(f"Error extracting company detail URL: {str(e)}")
-            return "N/A"
+    def _extract_company_detail_url(self, card, base_url, job_url):
+        for selector in self.SELECTORS['company_link']:
+            link = card.select_one(selector)
+            if link and link.get('href'):
+                url = urljoin(base_url, link['href'])
+                if urlsplit(url).scheme in ('http', 'https'):
+                    return url
+        # Do not invent a company URL from its name.
+        return ''
 
     def _get_job_description(self, url: str) -> Optional[str]:
         try:
             if html := self.cf_handler.get_page(url):
                 soup = BeautifulSoup(html, 'html.parser')
-                return self._get_element_text(soup, self.SELECTORS['job_description'], default='')
+                description = self._get_element_text(soup, self.SELECTORS['job_description'], default='')
+                if description:
+                    return description
+                def loaded(driver):
+                    self._check_stop()
+                    current = BeautifulSoup(driver.page_source, 'html.parser')
+                    return self._get_element_text(current, self.SELECTORS['job_description'], default='') or False
+                try:
+                    return WebDriverWait(self.cf_handler.driver, getattr(settings, 'SCRAPER_DESCRIPTION_WAIT', 8)).until(loaded)
+                except TimeoutException:
+                    return None
+        except LoginRequired:
+            self.detail_login_required = True
+            self.stats['login_required'] += 1
+            self.logger.warning('Indeed requires login for full job descriptions. Remaining listing data will be kept; repeated login-page requests are disabled.')
         except ScrapingStopped:
             raise
         except Exception as e:
