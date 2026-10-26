@@ -190,3 +190,34 @@ profile was used for this test. This verifies startup, not Indeed availability.
 
 Validation: 49 Django regressions and 9 frontend scenarios, plus the real local
 Chrome startup test. Existing database contents and exports remain untouched.
+
+## Source-page evidence and classification
+
+Login/block exceptions now save evidence under logs/diagnostics (override
+SCRAPER_DIAGNOSTIC_DIR): a screenshot when available and a JSON record containing
+Pakistan timestamp, detection reason, requested/final URLs, title, and up to 2000
+characters of visible text. Authentication/tracking query parameters, credentials
+in URLs, fragments, cookies, headers, form values, and full page HTML are not saved
+by the metadata writer. Screenshots may contain visible account information, so
+these local artifacts should not be published without review. The diagnostic JSON
+filename is included in the error and terminal log.
+
+Strong login URLs/titles and blocked/verification titles remain authoritative.
+Visible recognized job results or descriptions are no longer rejected solely
+because ordinary page text contains a sign-in invitation or the phrase access
+denied. Classification tests distinguish that case from a real login redirect or
+Blocked - Indeed.com title. These checks do not bypass login or verification.
+
+Verification: 53 Django tests and 9 frontend scenarios. Existing saved records
+and exports remain intact. New artifacts help inspect source restrictions; they
+do not establish that protected descriptions or later pages are accessible.
+
+Live source evidence on 27 October 2026 at 02:25 Pakistan time: a visible UC
+browser opened a public Python-developer listing and followed a supplied /rc/clk
+job link. It redirected to /viewjob?jk=1a20a1c56fb7df73 with title Just a moment...
+and visible heading Additional Verification Required, Cloudflare troubleshooting
+information, and no description DOM. A local PNG and redacted JSON capture were
+saved during the probe. This confirms a real verification page in that detail
+request, not just an inferred block based on the application's progress message.
+The older second-page login classification still needs its own future source
+snapshot; the screenshot of the local form does not prove that source response.

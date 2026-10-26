@@ -567,3 +567,51 @@ class BrowserStartupDiagnosticsTests(ExportIsolationMixin, TestCase):
         from .utils.cloudflare_handler import CloudflareHandler,BrowserStartupError
         with self.assertRaisesRegex(BrowserStartupError,'Chrome version mismatch'):
             CloudflareHandler(backend='selenium')
+
+
+class SourcePageDiagnosticTests(ExportIsolationMixin, TestCase):
+    def browser(self,title,url,text,content=False):
+        from .utils.cloudflare_handler import CloudflareHandler
+        browser=CloudflareHandler.__new__(CloudflareHandler)
+        browser.backend='selenium'
+        browser.driver=Mock()
+        browser.driver.title=title
+        browser.driver.current_url=url
+        browser.driver.page_source='<html>source</html>'
+        body=Mock(text=text)
+        entry=Mock(text='Visible job')
+        entry.is_displayed.return_value=True
+        browser.driver.find_element.return_value=body
+        browser.driver.find_elements.side_effect=lambda by,selector: [body] if selector=='body' else ([entry] if content else [])
+        browser.driver.save_screenshot.return_value=False
+        return browser
+
+    def test_auth_redirect_captures_redacted_evidence(self):
+        import json
+        from pathlib import Path
+        from .utils.cloudflare_handler import LoginRequired
+        browser=self.browser('Sign in | Indeed','https://secure.indeed.com/account/login?token=secret&start=10','Sign in to continue')
+        with self.assertRaises(LoginRequired):
+            browser.get_page('https://www.indeed.com/jobs?q=Python&start=10&tracking=secret')
+        files=list((Path(self.export_directory.name)/'logs'/'diagnostics').glob('*.json'))
+        self.assertEqual(len(files),1)
+        data=json.loads(files[0].read_text())
+        self.assertEqual(data['reason'],'login URL/title')
+        self.assertEqual(data['title'],'Sign in | Indeed')
+        self.assertNotIn('secret',data['final_url'])
+        self.assertNotIn('secret',data['requested_url'])
+        self.assertIn('start=10',data['requested_url'])
+
+    def test_actual_block_title_is_detected(self):
+        from .utils.cloudflare_handler import SourceAccessBlocked
+        browser=self.browser('Blocked - Indeed.com','https://www.indeed.com/jobs','Blocked')
+        with self.assertRaises(SourceAccessBlocked):
+            browser.get_page('https://www.indeed.com/jobs')
+
+    def test_visible_results_with_incidental_signin_text_are_not_rejected(self):
+        browser=self.browser('Python jobs | Indeed','https://www.indeed.com/jobs','Sign in to view this job. Public results.',content=True)
+        self.assertEqual(browser.get_page('https://www.indeed.com/jobs'),'<html>source</html>')
+
+    def test_visible_description_with_incidental_denial_text_is_not_rejected(self):
+        browser=self.browser('Security engineer | Indeed','https://www.indeed.com/viewjob?jk=1','Diagnose access denied errors',content=True)
+        self.assertEqual(browser.get_page('https://www.indeed.com/viewjob?jk=1'),'<html>source</html>')
