@@ -2,6 +2,7 @@
     const form = document.getElementById('scrapeForm');
     const start = document.getElementById('startScrapingBtn');
     const stop = document.getElementById('stopScrapingBtn');
+    const resume = document.getElementById('resumeScrapingBtn');
     const download = document.getElementById('downloadResultsBtn');
     const progress = document.getElementById('scrape-progress-row');
     const warning = document.getElementById('scrape-warning-row');
@@ -13,6 +14,10 @@
         if (Number.isInteger(data.scraped)) saved = data.scraped;
         if (data.warning) latestWarning = data.warning;
         if (data.stats) latestStats = data.stats;
+        if (data.status) {
+            resume.hidden = data.status !== 'awaiting_verification';
+            resume.disabled = data.status !== 'awaiting_verification';
+        }
         const stats = latestStats;
         const counts = `Pages read: ${stats.pages_visited || 0} (attempted: ${stats.pages_attempted || 0}) | Found: ${stats.found || 0} | Saved: ${saved} | Updated: ${stats.updated || 0} | Duplicates: ${stats.duplicates || 0} | Skipped/errors: ${(stats.missing_title || 0) + (stats.missing_job_key || 0) + (stats.extraction_errors || 0) + (stats.database_errors || 0)}`;
         progress.textContent = `${counts} | ${data.activity || data.status || 'Scraping...'}`;
@@ -47,7 +52,7 @@
             const data = await parse(response);
             if (!active) return;
             show(data);
-            stop.disabled = !['starting', 'running'].includes(data.status);
+            stop.disabled = !['starting', 'running', 'awaiting_verification'].includes(data.status);
         } catch (error) {
             if (active) warning.textContent = `Warnings: Progress update unavailable: ${error.message}`;
         } finally { polling = false; }
@@ -65,13 +70,25 @@
             if (active) stop.disabled = false;
         }
     });
+    resume.addEventListener('click', async () => {
+        if (!active || resume.disabled) return;
+        resume.disabled = true;
+        try {
+            const data = await parse(await fetch(endpoint('resumeUrl'), { method: 'POST', body: new FormData(form), headers, credentials: 'same-origin' }));
+            show(data);
+        } catch (error) {
+            latestWarning = `Resume failed: ${error.message}`;
+            show({ activity: 'Complete verification in Chrome, then retry Resume.' });
+            if (active) resume.disabled = false;
+        }
+    });
     form.addEventListener('submit', async event => {
         event.preventDefault();
         if (active) return;
         active = true;
         saved = 0; latestWarning = ''; latestStats = {};
         runId = crypto.randomUUID();
-        start.disabled = true; stop.disabled = true; download.hidden = true;
+        start.disabled = true; stop.disabled = true; download.hidden = true; resume.hidden = true;
         document.getElementById('logging-area').style.display = 'block';
         show({ activity: 'Starting scraping process...' });
         const body = new FormData(form);
@@ -94,7 +111,7 @@
         } finally {
             active = false;
             clearInterval(timer);
-            start.disabled = false; stop.disabled = true;
+            start.disabled = false; stop.disabled = true; resume.hidden = true;
         }
     });
 })();

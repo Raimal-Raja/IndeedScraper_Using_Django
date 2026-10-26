@@ -6,16 +6,17 @@ const crypto = require('crypto');
 const script = fs.readFileSync(path.join(__dirname, '../static/js/scrape.js'), 'utf8');
 const json = (data, status=200) => ({status, ok: status < 400, headers: {get: () => 'application/json'}, json: async () => data});
 function harness(fetch) {
-    let submit, stopClick, poll;
+    let submit, stopClick, resumeClick, poll;
     const elements = {
-        scrapeForm: {action: 'http://localhost/scrape/', dataset: {progressUrl: '/scrape/progress/00000000-0000-0000-0000-000000000000/', stopUrl: '/scrape/stop/00000000-0000-0000-0000-000000000000/'}, addEventListener: (_, fn) => submit=fn},
+        scrapeForm: {action: 'http://localhost/scrape/', dataset: {progressUrl: '/scrape/progress/00000000-0000-0000-0000-000000000000/', stopUrl: '/scrape/stop/00000000-0000-0000-0000-000000000000/', resumeUrl: '/scrape/resume/00000000-0000-0000-0000-000000000000/'}, addEventListener: (_, fn) => submit=fn},
         startScrapingBtn: {disabled:false}, stopScrapingBtn: {disabled:true, addEventListener: (_, fn) => stopClick=fn},
+        resumeScrapingBtn: {hidden:true,disabled:true,addEventListener:(_,fn)=>resumeClick=fn},
         downloadResultsBtn: {hidden:true}, 'scrape-progress-row': {textContent:''}, 'scrape-warning-row': {textContent:''}, 'logging-area': {style:{}}
     };
     vm.runInNewContext(script, {document: {getElementById: id => elements[id]}, crypto, URL, FormData: class {set() {}},
         window: {location: {href: 'http://localhost/scrape/', origin:'http://localhost'}},
         setInterval: fn => {poll=fn;return 1;}, clearInterval: () => {}, fetch});
-    return {elements, submit: () => submit({preventDefault(){}}), stop: () => stopClick(), poll: () => poll()};
+    return {elements, submit: () => submit({preventDefault(){}}), stop: () => stopClick(), resume: () => resumeClick(), poll: () => poll()};
 }
 (async () => {
     let app = harness(async url => String(url).includes('/progress/') ? json({},404) : ({status:500,headers:{get:()=> 'text/html'}}));
@@ -65,5 +66,21 @@ function harness(fetch) {
     await app.submit();
     assert.match(app.elements['scrape-progress-row'].textContent,/Found: 4.*Skipped\/errors: 4/);
     assert.match(app.elements['scrape-warning-row'].textContent,/could not be saved/);
-    console.log('9 frontend scenarios passed, including duplicate-only results and parser-failure counters.');
+    let finishManual;
+    app=harness(async url => {
+        if(String(url).includes('/progress/')) return json({scraped:3,status:'awaiting_verification',activity:'Complete verification in Chrome'});
+        if(String(url).includes('/resume/')) return json({scraped:3,status:'running',activity:'Rechecking source'});
+        return new Promise(resolve=>finishManual=resolve);
+    });
+    const waiting=app.submit();
+    await app.poll();
+    assert.equal(app.elements.resumeScrapingBtn.hidden,false);
+    assert.equal(app.elements.stopScrapingBtn.disabled,false);
+    await app.resume();
+    assert.equal(app.elements.resumeScrapingBtn.hidden,true);
+    finishManual(json({total_jobs:4,status:'completed',download_url:'/download/?keyword=Python'}));
+    await waiting;
+    assert.equal(app.elements.downloadResultsBtn.hidden,false);
+    assert.equal(app.elements.resumeScrapingBtn.hidden,true);
+    console.log('10 frontend scenarios passed, including manual verification pause and Resume.');
 })().catch(error=>{console.error(error);process.exitCode=1;});

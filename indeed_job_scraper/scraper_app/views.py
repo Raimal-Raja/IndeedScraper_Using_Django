@@ -4,7 +4,7 @@ from django.conf import settings
 from .forms import JobSearchForm
 from .models import JobPosting
 from .utils.Scraper import Scraper
-from .progress import create_run, get_run, update_run, stop_run, ProgressHandler, ScrapingStopped
+from .progress import create_run, get_run, update_run, stop_run, ProgressHandler, ScrapingStopped, wait_for_verification, resume_run
 from uuid import uuid4, UUID
 from django.views.decorators.http import require_GET, require_POST
 from .csv_export import export_search
@@ -72,8 +72,13 @@ def start_scraping(request):
         logger.exception('Could not create run log; terminal logging remains enabled')
     def download_url():
         return reverse('download_results') + '?' + urlencode({'keyword': keyword, 'country': country})
+    def verify_manually(url, reason):
+        available = JobPosting.objects.filter(search_term=keyword, country=country).count()
+        update_run(run_id, available_jobs=available, download_url=download_url() if available else None)
+        return wait_for_verification(run_id, stop_event, reason,
+                                     timeout=getattr(settings, 'SCRAPER_MANUAL_VERIFICATION_TIMEOUT', 300))
     try:
-        scraper = Scraper(stop_event=stop_event, browser_backend=form.cleaned_data.get('browser_backend') or 'selenium', pacing=form.cleaned_data.get('pacing') or 'slow')
+        scraper = Scraper(stop_event=stop_event, browser_backend=form.cleaned_data.get('browser_backend') or 'selenium', pacing=form.cleaned_data.get('pacing') or 'slow', verification_callback=verify_manually if form.cleaned_data.get('manual_verification') else None)
         if stop_event.is_set():
             raise ScrapingStopped()
         update_run(run_id, status='running', activity=f'Searching {keyword} in {country}')
@@ -127,8 +132,10 @@ def start_scraping(request):
     except ScrapingStopped:
         count = getattr(scraper, 'total_jobs', 0)
         count = count if isinstance(count, int) else 0
-        update_run(run_id, status='stopped', scraped=count, activity='Stopped. Saved records are preserved.', download_url=download_url() if count else None)
-        return JsonResponse({'run_id': run_id, 'status': 'stopped', 'total_jobs': count, 'keyword': keyword, 'country': country, 'download_url': download_url() if count else None})
+        available = JobPosting.objects.filter(search_term=keyword, country=country).count()
+        update_run(run_id, available_jobs=available)
+        update_run(run_id, status='stopped', scraped=count, activity='Stopped. Saved records are preserved.', download_url=download_url() if count or available else None)
+        return JsonResponse({'run_id': run_id, 'status': 'stopped', 'total_jobs': count, 'keyword': keyword, 'country': country, 'download_url': download_url() if count or available else None, 'available_jobs': available})
     except Exception as exc:
         logger.exception('Scraping failed for %r in %s', keyword, country)
         message = str(exc) if isinstance(exc, BrowserStartupError) else 'Scraping could not start or complete. Check the server logs for the browser or connection error.'
@@ -161,6 +168,14 @@ def scraping_progress(request, run_id):
 def stop_scraping(request, run_id):
     data = stop_run(run_id)
     return JsonResponse(data if data is not None else {'error': 'Run not found in this server process.'}, status=200 if data is not None else 404)
+
+
+@require_POST
+def resume_scraping(request, run_id):
+    data = resume_run(run_id)
+    if data is None:
+        return JsonResponse({'error': 'Run not found in this server process.'}, status=404)
+    return JsonResponse(data, status=409 if 'error' in data else 200)
 
 
 def download_csv(request, keyword=None, country=None):

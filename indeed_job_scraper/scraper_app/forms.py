@@ -17,3 +17,5 @@ class JobSearchForm(forms.Form):
     pacing = forms.ChoiceField(
         choices=[('slow', 'Slow (5-7 seconds)'), ('normal', 'Normal (2-4 seconds)')],
         required=False, initial='slow', label='Request pacing')
+
+    manual_verification = forms.BooleanField(required=False, initial=True, label='Pause for manual login or verification')

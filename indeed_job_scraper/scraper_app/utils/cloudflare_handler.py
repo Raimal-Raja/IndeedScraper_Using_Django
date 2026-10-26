@@ -3,6 +3,7 @@ import logging
 import importlib
 import shutil
 import tempfile
+import threading
 import json
 import re
 from datetime import datetime
@@ -18,6 +19,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 
 logger = logging.getLogger(__name__)
+_manual_profile_lock = threading.Lock()
 
 class BrowserStartupError(RuntimeError):
     """A browser configuration/download/startup failure safe to show locally."""
@@ -59,7 +61,9 @@ class LoginRequired(RuntimeError):
     """The source requires a user login; no automated login or bypass is attempted."""
 
 class CloudflareHandler:
-    def __init__(self, backend=None):
+    def __init__(self, backend=None, verification_callback=None):
+        self.verification_callback = verification_callback
+        self._profile_lock_held = False
         self.backend = backend or getattr(settings, 'SCRAPER_BROWSER_BACKEND', 'selenium')
         if self.backend not in ('selenium', 'undetected'):
             raise ValueError('Unsupported browser backend')
@@ -67,13 +71,23 @@ class CloudflareHandler:
         self.driver = None
         try:
             self._setup_driver()
-        except BrowserStartupError:
-            raise
         except Exception as exc:
+            try:
+                self.close()
+            except Exception:
+                logger.warning('Browser cleanup failed after startup failure', exc_info=True)
+            if isinstance(exc, BrowserStartupError):
+                raise
             detail = ' '.join(str(exc).splitlines()[:3]).strip()[:600] or type(exc).__name__
             raise BrowserStartupError(f'{self.backend} browser could not start ({type(exc).__name__}): {detail}. Check the driver version/path, network access for driver downloads, and whether the configured Chrome profile is already open.') from exc
 
     def _setup_driver(self):
+        if self.verification_callback:
+            if getattr(settings, 'SCRAPER_HEADLESS', False):
+                raise BrowserStartupError('Manual verification requires visible Chrome. Set SCRAPER_HEADLESS=False or disable manual verification.')
+            if not _manual_profile_lock.acquire(blocking=False):
+                raise BrowserStartupError('A manual-verification browser is already open. Stop that run before starting another.')
+            self._profile_lock_held = True
         uc = None
         if self.backend == 'undetected':
             try:
@@ -91,8 +105,9 @@ class CloudflareHandler:
         if getattr(settings, 'SCRAPER_HEADLESS', False):
             options.add_argument('--headless=new')
         profile = getattr(settings, 'SCRAPER_CHROME_PROFILE_DIR', None)
+        if self.verification_callback and not profile:
+            profile = Path(settings.BASE_DIR) / '.scraper-browser'
         if profile:
-            from pathlib import Path
             profile = Path(profile).resolve()
             profile.mkdir(parents=True, exist_ok=True)
             options.add_argument(f'--user-data-dir={profile}')
@@ -108,7 +123,6 @@ class CloudflareHandler:
             if uc is not None:
                 # UC patches its driver; never modify the standard driver's configured binary.
                 if driver_path:
-                    from pathlib import Path
                     self._driver_copy = tempfile.TemporaryDirectory(prefix='indeed-uc-driver-')
                     copied = Path(self._driver_copy.name) / Path(driver_path).name
                     shutil.copy2(driver_path, copied)
@@ -170,6 +184,16 @@ class CloudflareHandler:
             return None
 
     def get_page(self, url):
+        try:
+            return self._read_page(url)
+        except (LoginRequired, SourceAccessBlocked) as exc:
+            callback = getattr(self, 'verification_callback', None)
+            if callback and callback(url, str(exc)):
+                # Only an explicit user Resume action triggers this one recheck.
+                return self._read_page(url)
+            raise
+
+    def _read_page(self, url):
         logger.info('Accessing %s', url)
         self.driver.get(url)
         WebDriverWait(self.driver, 20).until(lambda driver: driver.find_elements(By.TAG_NAME, 'body'))
@@ -207,6 +231,11 @@ class CloudflareHandler:
                 driver, self.driver = self.driver, None
                 driver.quit()
         finally:
-            if self._driver_copy is not None:
-                self._driver_copy.cleanup()
-                self._driver_copy = None
+            try:
+                if self._driver_copy is not None:
+                    self._driver_copy.cleanup()
+                    self._driver_copy = None
+            finally:
+                if getattr(self, '_profile_lock_held', False):
+                    self._profile_lock_held = False
+                    _manual_profile_lock.release()

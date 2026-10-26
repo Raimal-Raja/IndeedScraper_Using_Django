@@ -9,7 +9,7 @@ class ExportIsolationMixin:
         super().setUp()
         self.export_directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.export_directory.cleanup)
-        override = override_settings(SCRAPER_EXPORT_DIR=self.export_directory.name, SCRAPER_LOG_DIR=self.export_directory.name + '/logs')
+        override = override_settings(SCRAPER_EXPORT_DIR=self.export_directory.name, SCRAPER_LOG_DIR=self.export_directory.name + '/logs', SCRAPER_CHROME_PROFILE_DIR=self.export_directory.name + '/browser')
         override.enable()
         self.addCleanup(override.disable)
 
@@ -615,3 +615,101 @@ class SourcePageDiagnosticTests(ExportIsolationMixin, TestCase):
     def test_visible_description_with_incidental_denial_text_is_not_rejected(self):
         browser=self.browser('Security engineer | Indeed','https://www.indeed.com/viewjob?jk=1','Diagnose access denied errors',content=True)
         self.assertEqual(browser.get_page('https://www.indeed.com/viewjob?jk=1'),'<html>source</html>')
+
+
+class ManualVerificationTests(ExportIsolationMixin, TestCase):
+    def create(self):
+        from uuid import uuid4
+        from .progress import create_run
+        run_id=str(uuid4())
+        return run_id,create_run(run_id)
+
+    def test_wait_and_resume_are_explicit(self):
+        import threading,time
+        from .progress import wait_for_verification,get_run,resume_run
+        run_id,event=self.create()
+        results=[]
+        worker=threading.Thread(target=lambda: results.append(wait_for_verification(run_id,event,'Source requires login',timeout=2)))
+        worker.start()
+        try:
+            deadline=time.monotonic()+1
+            while get_run(run_id)['status']!='awaiting_verification' and time.monotonic()<deadline:
+                time.sleep(0.001)
+            self.assertEqual(get_run(run_id)['status'],'awaiting_verification')
+            self.assertNotIn('resume_event',get_run(run_id))
+            self.assertFalse(results)
+            resume_run(run_id)
+            worker.join(1)
+            self.assertEqual(results,[True])
+        finally:
+            event.set()
+            worker.join(1)
+
+    def test_stop_interrupts_verification_wait(self):
+        import threading,time
+        from .progress import wait_for_verification,get_run,stop_run,ScrapingStopped
+        run_id,event=self.create()
+        results=[]
+        def wait():
+            try: wait_for_verification(run_id,event,'Verification required',timeout=2)
+            except ScrapingStopped: results.append('stopped')
+        worker=threading.Thread(target=wait)
+        worker.start()
+        try:
+            deadline=time.monotonic()+1
+            while get_run(run_id)['status']!='awaiting_verification' and time.monotonic()<deadline:
+                time.sleep(0.001)
+            stop_run(run_id)
+            worker.join(1)
+            self.assertEqual(results,['stopped'])
+        finally:
+            event.set()
+            worker.join(1)
+
+    def test_wait_has_a_timeout(self):
+        from .progress import wait_for_verification,get_run
+        run_id,event=self.create()
+        self.assertFalse(wait_for_verification(run_id,event,'Verification required',timeout=0.01))
+        self.assertIn('timed out',get_run(run_id)['warning'])
+
+    def test_resume_endpoint_is_post_only_csrf_protected_and_state_checked(self):
+        from .progress import update_run
+        run_id,event=self.create()
+        self.assertEqual(self.client.get(f'/scrape/resume/{run_id}/').status_code,405)
+        self.assertEqual(self.client.post(f'/scrape/resume/{run_id}/').status_code,409)
+        update_run(run_id,status='awaiting_verification')
+        self.assertEqual(Client(enforce_csrf_checks=True).post(f'/scrape/resume/{run_id}/').status_code,403)
+        self.assertEqual(self.client.post(f'/scrape/resume/{run_id}/').status_code,200)
+
+    def test_description_is_read_only_after_manual_resume(self):
+        from .utils.Scraper import Scraper
+        from .utils.cloudflare_handler import CloudflareHandler,SourceAccessBlocked
+        browser=CloudflareHandler.__new__(CloudflareHandler)
+        browser.verification_callback=Mock(return_value=True)
+        browser._read_page=Mock(side_effect=[SourceAccessBlocked('Verification required'),'<div id="jobDescriptionText">Full description after manual verification</div>'])
+        with patch.object(Scraper,'_initialize_driver'):
+            scraper=Scraper()
+        scraper.cf_handler=browser
+        result=scraper._get_job_description('https://www.indeed.com/viewjob?jk=manual')
+        self.assertEqual(result,'Full description after manual verification')
+        browser.verification_callback.assert_called_once()
+        self.assertEqual(browser._read_page.call_count,2)
+        self.assertFalse(scraper.detail_requests_blocked)
+
+    def test_manual_verification_requires_a_visible_browser(self):
+        from .utils.cloudflare_handler import CloudflareHandler,BrowserStartupError
+        with override_settings(SCRAPER_HEADLESS=True):
+            with self.assertRaisesRegex(BrowserStartupError,'visible Chrome'):
+                CloudflareHandler(verification_callback=Mock())
+
+    def test_manual_browser_lock_is_released_on_close(self):
+        from .utils.cloudflare_handler import CloudflareHandler,BrowserStartupError
+        with patch('scraper_app.utils.cloudflare_handler.webdriver.Chrome'):
+            first=CloudflareHandler(verification_callback=Mock())
+            try:
+                with self.assertRaisesRegex(BrowserStartupError,'already open'):
+                    CloudflareHandler(verification_callback=Mock())
+            finally:
+                first.close()
+            second=CloudflareHandler(verification_callback=Mock())
+            second.close()

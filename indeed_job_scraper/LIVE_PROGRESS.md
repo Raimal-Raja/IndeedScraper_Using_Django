@@ -221,3 +221,33 @@ saved during the probe. This confirms a real verification page in that detail
 request, not just an inferred block based on the application's progress message.
 The older second-page login classification still needs its own future source
 snapshot; the screenshot of the local form does not prove that source response.
+
+## Manual verification pause and Resume
+
+The form now defaults to pausing for manual login/verification. The run enters
+Needs verification, keeps visible Chrome open, and exposes Resume Scraping.
+Complete the source step yourself in Chrome, then click Resume on the local app.
+Only that explicit action triggers one source recheck. No credentials are read
+by the scraper and no CAPTCHA or verification is solved automatically. A source
+that continues to deny access still stops collection or leaves descriptions blank.
+
+The default wait is five minutes, configurable with
+SCRAPER_MANUAL_VERIFICATION_TIMEOUT. Stop interrupts the wait and preserves all
+saved database records. Existing saved results remain downloadable while paused.
+At most three manual prompts are allowed per run. Resume is a CSRF-protected POST
+and only works when the run is actually waiting for verification.
+
+Manual mode uses a dedicated persistent .scraper-browser profile under the Django
+project unless SCRAPER_CHROME_PROFILE_DIR is configured. Your normal Chrome
+profile is not used. Only one manual-profile browser is allowed at a time in the
+single-process server, and its lock is released on close/startup failure. Headless
+mode is rejected for manual verification. The dedicated profile must stay out of
+Git because it can contain session data; the repository ignore rules cover it.
+
+Tests simulate a verification gate followed by a successful human Resume and
+verify that the description is then read. This tests the workflow; it does not
+claim successful human verification or full-description retrieval on live Indeed.
+
+Validation for the manual flow: 60 Django tests and 10 frontend scenarios pass.
+Live Indeed description retrieval after a real human verification has not been
+confirmed; the application now provides the interaction needed to attempt it.

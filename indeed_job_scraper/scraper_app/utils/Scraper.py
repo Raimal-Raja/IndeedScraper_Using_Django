@@ -76,7 +76,8 @@ class Scraper:
         ]
     }
 
-    def __init__(self, stop_event=None, browser_backend=None, pacing=None):
+    def __init__(self, stop_event=None, browser_backend=None, pacing=None, verification_callback=None):
+        self.verification_callback = verification_callback
         self.browser_backend = browser_backend
         self.pacing = pacing or 'slow'
         self.stop_event = stop_event or threading.Event()
@@ -111,7 +112,7 @@ class Scraper:
         try:
             if self.cf_handler:
                 self.cf_handler.close()
-            self.cf_handler = CloudflareHandler(backend=self.browser_backend)
+            self.cf_handler = CloudflareHandler(backend=self.browser_backend, verification_callback=self.verification_callback)
             self.logger.info("Chrome driver initialized successfully")
         except ScrapingStopped:
             raise
