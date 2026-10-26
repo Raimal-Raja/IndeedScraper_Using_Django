@@ -11,7 +11,7 @@ from typing import Dict, List, Optional
 from selenium.common.exceptions import TimeoutException
 from selenium.webdriver.support.ui import WebDriverWait
 # imported files
-from .cloudflare_handler import CloudflareHandler, LoginRequired
+from .cloudflare_handler import CloudflareHandler, LoginRequired, SourceAccessBlocked
 from scraper_app.csv_export import export_search
 from django.conf import settings
 from selenium.webdriver.common.by import By
@@ -87,6 +87,7 @@ class Scraper:
         self.errors = []
         self.detail_login_required = False
         self.last_description_login = False
+        self.detail_requests_blocked = False
         self.blocked_domains = {}
         self._initialize_driver()
 
@@ -416,12 +417,12 @@ class Scraper:
             company_detail_url = self._extract_company_detail_url(card, base_url, job_url)
 
             job_desc = existing.job_description if existing and existing.job_description and not existing.job_description.startswith('[Listing summary') else None
-            if not job_desc:
+            if not job_desc and not self.detail_requests_blocked:
                 for retry in range(self.config.MAX_RETRIES):
                     self._check_stop()
                     self.last_description_login = False
                     job_desc = self._get_job_description(job_url)
-                    if job_desc or self.last_description_login:
+                    if job_desc or self.last_description_login or self.detail_requests_blocked:
                         break
                     self._sleep(self.config.RETRY_DELAYS[retry])
             if not job_desc:
@@ -432,7 +433,7 @@ class Scraper:
                     self.stats['partial_description'] += 1
                 else:
                     job_desc = ''
-                reason = 'Indeed login required for this job' if self.last_description_login else 'description not available in the loaded page'
+                reason = 'detail-page access blocked' if self.detail_requests_blocked else ('Indeed login required for this job' if self.last_description_login else 'description not available in the loaded page')
                 self.logger.warning('Full description unavailable (%s) for %s; listing retained', reason, job_url)
 
             return {
@@ -505,6 +506,10 @@ class Scraper:
                     return WebDriverWait(self.cf_handler.driver, getattr(settings, 'SCRAPER_DESCRIPTION_WAIT', 8)).until(loaded)
                 except TimeoutException:
                     return None
+        except SourceAccessBlocked:
+            self.detail_requests_blocked = True
+            self.stats['description_blocks'] += 1
+            self.logger.warning('Detail-page access was blocked. Further detail requests are disabled for this run; already loaded listings will still be retained. Listing pagination remains subject to source access checks.')
         except LoginRequired:
             self.detail_login_required = True
             self.last_description_login = True

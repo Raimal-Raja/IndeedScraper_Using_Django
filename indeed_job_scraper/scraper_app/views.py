@@ -78,6 +78,8 @@ def start_scraping(request):
         warning = summary if failed_cards or stats.get('missing_description') else ('Some source pages were unavailable. ' + summary if blocked_domains or getattr(scraper, 'errors', []) else '')
         if stats.get('login_required'):
             warning = 'Some job descriptions required Indeed login; other public descriptions were still attempted. ' + summary
+        if stats.get('description_blocks'):
+            warning = 'Indeed blocked detail-page access. Available listings were retained; further detail requests were skipped. ' + summary
         if blocked_domains or getattr(scraper, 'errors', []):
             failures = getattr(scraper, 'errors', [])
             reason = str(failures[0]).splitlines()[0][:240] if failures else 'Source access was blocked.'

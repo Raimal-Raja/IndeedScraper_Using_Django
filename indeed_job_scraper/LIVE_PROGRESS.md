@@ -119,3 +119,17 @@ Indeed will permit automated requests.
 
 Validation: 37 Django tests and 9 frontend scenarios (fixture/mocked source
 operations). Existing database contents and exports are not overwritten by tests.
+
+## Detail-page failure isolation
+
+A blocked description request is now a typed source exception handled at the
+description boundary. It no longer aborts processing all remaining cards from an
+already loaded listing page. After a confirmed detail access challenge, further
+detail requests are disabled for the run (no challenge retries), and public
+listing fields continue to be retained. This differs from per-job login gates,
+which do not establish that all other public descriptions are inaccessible.
+A blocked listing/navigation request still stops source pagination. The final
+warning explicitly distinguishes a detail block from a collection-level block.
+Tests cover a blocked existing job followed by a new card and confirm that the
+new job is saved, plus stopping on listing blocks. Verification: 40 Django tests
+and 9 frontend scenarios, using fixtures and mocked browser operations.

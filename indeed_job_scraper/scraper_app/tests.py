@@ -421,3 +421,50 @@ class LinkAndRefreshTests(ExportIsolationMixin, TestCase):
         scraper=self.scraper()
         soup=BeautifulSoup('<script type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"JobPosting","description":"<p>Public <b>description</b></p>"}]}</script>','html.parser')
         self.assertEqual(scraper._description_from_soup(soup),'Public description')
+
+
+class DetailBlockIsolationTests(ExportIsolationMixin, TestCase):
+    def test_blocked_duplicate_detail_does_not_discard_other_cards(self):
+        from bs4 import BeautifulSoup
+        from .models import JobPosting
+        from .utils.Scraper import Scraper
+        from .utils.cloudflare_handler import SourceAccessBlocked
+        JobPosting.objects.create(title='Old job',company_name='Company',company_location='Remote',job_url='https://www.indeed.com/viewjob?jk=old',job_description='',post_date='2026-10-26',search_term='Python',country='United States')
+        with patch.object(Scraper,'_initialize_driver'):
+            scraper=Scraper()
+        scraper._sleep=Mock()
+        scraper.cf_handler=Mock()
+        scraper.cf_handler.get_page.side_effect=SourceAccessBlocked('Source access blocked')
+        soup=BeautifulSoup('<div class="job_seen_beacon"><h2 class="jobTitle"><a data-jk="old">Old job</a></h2></div><div class="job_seen_beacon"><h2 class="jobTitle"><a data-jk="new">New job</a></h2></div>','html.parser')
+        scraper._process_job_cards(soup,'https://www.indeed.com/','Python','United States')
+        self.assertEqual(scraper.cf_handler.get_page.call_count,1)
+        self.assertEqual(scraper.total_jobs,1)
+        self.assertEqual(scraper.stats['duplicates'],1)
+        self.assertEqual(scraper.stats['description_blocks'],1)
+        self.assertEqual(scraper.stats['missing_description'],2)
+        self.assertEqual(JobPosting.objects.count(),2)
+        self.assertTrue(JobPosting.objects.filter(title='New job').exists())
+        self.assertEqual(scraper.blocked_domains,{})
+        self.assertEqual(scraper.errors,[])
+
+    def test_listing_block_still_stops_pagination(self):
+        from .utils.Scraper import Scraper
+        from .utils.cloudflare_handler import SourceAccessBlocked
+        with patch.object(Scraper,'_initialize_driver'):
+            scraper=Scraper()
+        scraper.cf_handler=Mock()
+        scraper.cf_handler.get_page.side_effect=SourceAccessBlocked('Source access blocked')
+        scraper.scrape_jobs({'United States':'https://www.indeed.com/'},'Python')
+        self.assertEqual(scraper.cf_handler.get_page.call_count,1)
+        self.assertIn('United States',scraper.blocked_domains)
+        self.assertEqual(scraper.total_jobs,0)
+
+    @patch('scraper_app.views.Scraper')
+    def test_description_block_is_warning_not_whole_search_failure(self, scraper):
+        scraper.return_value.scrape_jobs.return_value=(1,{})
+        scraper.return_value.errors=[]
+        scraper.return_value.stats={'found':2,'saved':1,'duplicates':1,'missing_description':2,'description_blocks':1,'pages_visited':1}
+        response=self.client.post('/scrape/',{'keyword':'Python','country':'United States'},HTTP_X_REQUESTED_WITH='XMLHttpRequest')
+        self.assertEqual(response.status_code,200)
+        self.assertIn('blocked detail-page access',response.json()['warning'])
+        self.assertEqual(response.json()['total_jobs'],1)

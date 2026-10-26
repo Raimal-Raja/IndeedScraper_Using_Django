@@ -10,6 +10,9 @@ from selenium.webdriver.support.ui import WebDriverWait
 
 logger = logging.getLogger(__name__)
 
+class SourceAccessBlocked(RuntimeError):
+    """A source access challenge, distinct from an ordinary parsing failure."""
+
 class LoginRequired(RuntimeError):
     """The source requires a user login; no automated login or bypass is attempted."""
 
@@ -50,7 +53,7 @@ class CloudflareHandler:
         if not has_description and (login_path or login_title or 'sign in to view this job' in visible):
             raise LoginRequired('Indeed requires login to view this page')
         if any(term in title for term in ('just a moment', 'access denied', 'security check')) or any(term in visible for term in ('verify you are human', 'verify that you are human', 'unusual traffic', 'slide to verify', 'access denied')):
-            raise RuntimeError('Source access blocked by a verification challenge')
+            raise SourceAccessBlocked('Source access blocked by a verification challenge')
         return self.driver.page_source
 
     def close(self):
