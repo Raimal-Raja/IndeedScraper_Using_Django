@@ -468,3 +468,69 @@ class DetailBlockIsolationTests(ExportIsolationMixin, TestCase):
         self.assertEqual(response.status_code,200)
         self.assertIn('blocked detail-page access',response.json()['warning'])
         self.assertEqual(response.json()['total_jobs'],1)
+
+
+class BrowserModeTests(ExportIsolationMixin, TestCase):
+    def test_form_has_browser_and_pacing_controls(self):
+        response=self.client.get('/scrape/')
+        self.assertContains(response,'id_browser_backend')
+        self.assertContains(response,'id_pacing')
+        self.assertContains(response,'Undetected Chrome')
+
+    @patch('scraper_app.views.Scraper')
+    def test_selected_modes_are_passed_to_scraper(self,scraper):
+        scraper.return_value.scrape_jobs.return_value=(0,{})
+        scraper.return_value.errors=[]
+        scraper.return_value.stats={}
+        response=self.client.post('/scrape/',{'keyword':'Python','country':'United States','browser_backend':'undetected','pacing':'slow'},HTTP_X_REQUESTED_WITH='XMLHttpRequest')
+        self.assertEqual(response.status_code,200)
+        self.assertEqual(scraper.call_args.kwargs['browser_backend'],'undetected')
+        self.assertEqual(scraper.call_args.kwargs['pacing'],'slow')
+
+    @patch('scraper_app.views.Scraper')
+    def test_invalid_browser_rejected_before_startup(self,scraper):
+        response=self.client.post('/scrape/',{'keyword':'Python','country':'United States','browser_backend':'invalid'},HTTP_X_REQUESTED_WITH='XMLHttpRequest')
+        self.assertEqual(response.status_code,400)
+        scraper.assert_not_called()
+
+    def test_optional_uc_backend_starts_and_preserves_sandbox(self):
+        from types import SimpleNamespace
+        from selenium.webdriver.chrome.options import Options
+        from .utils.cloudflare_handler import CloudflareHandler
+        created=[]
+        class FakeChrome:
+            def __init__(self,**kwargs):
+                self.kwargs=kwargs
+                self.set_page_load_timeout=Mock()
+                created.append(self)
+            def quit(self):
+                pass
+        module=SimpleNamespace(Chrome=FakeChrome,ChromeOptions=Options)
+        with patch('scraper_app.utils.cloudflare_handler.importlib.import_module',return_value=module):
+            handler=CloudflareHandler(backend='undetected')
+        self.assertFalse(created[0].kwargs['no_sandbox'])
+        self.assertTrue(created[0].kwargs['use_subprocess'])
+        options=created[0].kwargs['options']
+        options.add_argument('--no-sandbox')
+        options.add_argument('--ignore-certificate-errors')
+        self.assertNotIn('--no-sandbox',options.arguments)
+        self.assertNotIn('--ignore-certificate-errors',options.arguments)
+        self.assertFalse(options.capabilities['acceptInsecureCerts'])
+        handler.close()
+
+    def test_missing_uc_dependency_explains_recovery(self):
+        from .utils.cloudflare_handler import CloudflareHandler
+        with patch('scraper_app.utils.cloudflare_handler.importlib.import_module',side_effect=ImportError('not installed')):
+            with self.assertRaisesRegex(RuntimeError,'Install undetected-chromedriver'):
+                CloudflareHandler(backend='undetected')
+
+    def test_varied_pacing_remains_interruptible(self):
+        from .utils.Scraper import Scraper
+        event=Mock()
+        event.wait.return_value=False
+        with patch.object(Scraper,'_initialize_driver'):
+            scraper=Scraper(stop_event=event,pacing='slow')
+        self.assertEqual(scraper.config.PAGE_DELAY,5)
+        with patch('scraper_app.utils.Scraper.random.uniform',return_value=1.25):
+            scraper._sleep(5)
+        event.wait.assert_called_once_with(6.25)

@@ -19,6 +19,7 @@ from scraper_app.models import JobPosting
 from .duplicate_checker import DuplicateChecker
 from scraper_app.progress import ScrapingStopped
 import threading
+import random
 
 @dataclass
 class ScraperConfig:
@@ -75,10 +76,16 @@ class Scraper:
         ]
     }
 
-    def __init__(self, stop_event=None):
+    def __init__(self, stop_event=None, browser_backend=None, pacing=None):
+        self.browser_backend = browser_backend
+        self.pacing = pacing or 'slow'
         self.stop_event = stop_event or threading.Event()
         self.logger = logging.getLogger(__name__)
         self.config = ScraperConfig()
+        if self.pacing not in ('normal', 'slow'):
+            raise ValueError('Unsupported pacing mode')
+        if self.pacing == 'slow':
+            self.config.PAGE_DELAY = 5
         self.cf_handler = None
         self.duplicate_checker = DuplicateChecker()
         self.total_jobs = 0
@@ -96,14 +103,15 @@ class Scraper:
             raise ScrapingStopped('Scraping stopped by user')
 
     def _sleep(self, seconds):
-        if self.stop_event.wait(seconds):
+        jitter = float(getattr(settings, 'SCRAPER_DELAY_JITTER', 2))
+        if self.stop_event.wait(seconds + random.uniform(0, max(0, jitter))):
             self._check_stop()
 
     def _initialize_driver(self) -> None:
         try:
             if self.cf_handler:
                 self.cf_handler.close()
-            self.cf_handler = CloudflareHandler()
+            self.cf_handler = CloudflareHandler(backend=self.browser_backend)
             self.logger.info("Chrome driver initialized successfully")
         except ScrapingStopped:
             raise

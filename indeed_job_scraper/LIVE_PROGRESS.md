@@ -133,3 +133,35 @@ warning explicitly distinguishes a detail block from a collection-level block.
 Tests cover a blocked existing job followed by a new card and confirm that the
 new job is saved, plus stopping on listing blocks. Verification: 40 Django tests
 and 9 frontend scenarios, using fixtures and mocked browser operations.
+
+## Optional UC browser and request pacing
+
+The scrape form now offers Standard Chrome (default) and experimental Undetected
+Chrome. Request pacing defaults to a 5-second delay plus up to 2 seconds of jitter;
+normal pacing uses 2 seconds plus the same jitter. These waits remain interruptible
+by Stop. No fake clicks, proxy rotation, CAPTCHA solving, or forced challenge
+retries are added. Both modes retain login/challenge detection, saved rows, and
+CSV checkpoints. Browser mode/headless status is logged when the browser starts.
+
+UC is lazy-loaded only when selected. Install requirements.txt in the server's
+Python environment; UC is tested at version 3.5.5, with setuptools for Python 3.12.
+SCRAPER_DRIVER_PATH is copied to a temporary location for UC so its binary patcher
+does not alter the configured standard driver. Optional SCRAPER_CHROME_MAJOR can
+pin the installed Chrome major if UC's automatic download chooses the wrong one.
+Existing SCRAPER_CHROME_PROFILE_DIR works for either mode; only one browser may
+use a particular profile at a time. Credentials are not collected or automated.
+The integration preserves certificate validation and filters UC's no-sandbox
+argument; no additional fingerprint or TLS patches are added by this project.
+
+Live test on 27 October 2026: UC 3.5.5 started with a copied matching ChromeDriver
+155 and a disposable headless profile. A single public Indeed Data Scientist
+search returned title "Blocked - Indeed.com" and zero listing links. Therefore UC
+has not resolved access on this connection and Standard Chrome remains default.
+No existing database records, exports, or normal Chrome profiles were used in
+that probe. A known UC Windows double-close handle error is handled by the wrapper.
+
+The upstream documentation explicitly says it does not hide IP reputation and
+results vary: https://github.com/ultrafunkamsterdam/undetected-chromedriver
+
+Validation: 46 Django regressions and 9 frontend scenarios; live source availability
+is reported separately from fixture-based integration checks.

@@ -15,8 +15,8 @@
                         <div class="mb-3">
                             <label for="id_keyword" class="form-label">Job Keyword</label>
                             {{ form.keyword.errors }}
-                            <input type="text" name="keyword" class="form-control" 
-                                   id="id_keyword" placeholder="e.g., Python Developer" 
+                            <input type="text" name="keyword" class="form-control"
+                                   id="id_keyword" placeholder="e.g., Python Developer"
                                    required maxlength="100">
                         </div>
                         <div class="mb-3">
@@ -27,6 +27,20 @@
                                     <option value="{{ value }}">{{ label }}</option>
                                 {% endfor %}
                             </select>
+                        </div>
+                        <div class="row mb-3">
+                            <div class="col-sm-6 mb-2">
+                                <label for="id_browser_backend" class="form-label">Browser mode</label>
+                                <select id="id_browser_backend" name="browser_backend" class="form-control">
+                                    {% for value, label in form.browser_backend.field.choices %}<option value="{{ value }}"{% if value == 'selenium' %} selected{% endif %}>{{ label }}</option>{% endfor %}
+                                </select>
+                            </div>
+                            <div class="col-sm-6 mb-2">
+                                <label for="id_pacing" class="form-label">Request pacing</label>
+                                <select id="id_pacing" name="pacing" class="form-control">
+                                    {% for value, label in form.pacing.field.choices %}<option value="{{ value }}"{% if value == 'slow' %} selected{% endif %}>{{ label }}</option>{% endfor %}
+                                </select>
+                            </div>
                         </div>
                         <div class="text-center">
                             <button type="submit" class="btn btn-primary" id="startScrapingBtn">

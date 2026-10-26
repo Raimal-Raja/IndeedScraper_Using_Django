@@ -1,5 +1,8 @@
 """Standard Selenium browser with explicit access-challenge reporting."""
 import logging
+import importlib
+import shutil
+import tempfile
 from urllib.parse import urlsplit
 from django.conf import settings
 from selenium import webdriver
@@ -17,12 +20,29 @@ class LoginRequired(RuntimeError):
     """The source requires a user login; no automated login or bypass is attempted."""
 
 class CloudflareHandler:
-    def __init__(self):
+    def __init__(self, backend=None):
+        self.backend = backend or getattr(settings, 'SCRAPER_BROWSER_BACKEND', 'selenium')
+        if self.backend not in ('selenium', 'undetected'):
+            raise ValueError('Unsupported browser backend')
+        self._driver_copy = None
         self.driver = None
         self._setup_driver()
 
     def _setup_driver(self):
-        options = Options()
+        uc = None
+        if self.backend == 'undetected':
+            try:
+                uc = importlib.import_module('undetected_chromedriver')
+            except ImportError as exc:
+                raise RuntimeError('UC mode is unavailable. Install undetected-chromedriver==3.5.5 and setuptools in the server Python environment, or select Standard Chrome.') from exc
+            class SandboxedOptions(uc.ChromeOptions):
+                def add_argument(self, argument):
+                    if argument not in ('--no-sandbox', '--ignore-certificate-errors'):
+                        return super().add_argument(argument)
+            options = SandboxedOptions()
+            options.set_capability('acceptInsecureCerts', False)
+        else:
+            options = Options()
         if getattr(settings, 'SCRAPER_HEADLESS', False):
             options.add_argument('--headless=new')
         profile = getattr(settings, 'SCRAPER_CHROME_PROFILE_DIR', None)
@@ -33,7 +53,27 @@ class CloudflareHandler:
             options.add_argument(f'--user-data-dir={profile}')
         driver_path = getattr(settings, 'SCRAPER_DRIVER_PATH', None)
         try:
-            self.driver = webdriver.Chrome(service=Service(driver_path) if driver_path else Service(), options=options)
+            if uc is not None:
+                # UC patches its driver; never modify the standard driver's configured binary.
+                if driver_path:
+                    from pathlib import Path
+                    self._driver_copy = tempfile.TemporaryDirectory(prefix='indeed-uc-driver-')
+                    copied = Path(self._driver_copy.name) / Path(driver_path).name
+                    shutil.copy2(driver_path, copied)
+                    driver_path = str(copied)
+                class WindowsChrome(uc.Chrome):
+                    def quit(self):
+                        try:
+                            return super().quit()
+                        except OSError:
+                            logger.debug('UC driver handle was already closed', exc_info=True)
+                self.driver = WindowsChrome(options=options, driver_executable_path=driver_path,
+                                            headless=getattr(settings, 'SCRAPER_HEADLESS', False),
+                                            version_main=getattr(settings, 'SCRAPER_CHROME_MAJOR', None),
+                                            use_subprocess=True, no_sandbox=False)
+            else:
+                self.driver = webdriver.Chrome(service=Service(driver_path) if driver_path else Service(), options=options)
+            logger.info('Browser backend: %s | headless: %s', self.backend, getattr(settings, 'SCRAPER_HEADLESS', False))
             self.driver.set_page_load_timeout(45)
         except Exception:
             self.close()
@@ -57,6 +97,11 @@ class CloudflareHandler:
         return self.driver.page_source
 
     def close(self):
-        if self.driver is not None:
-            driver, self.driver = self.driver, None
-            driver.quit()
+        try:
+            if self.driver is not None:
+                driver, self.driver = self.driver, None
+                driver.quit()
+        finally:
+            if self._driver_copy is not None:
+                self._driver_copy.cleanup()
+                self._driver_copy = None

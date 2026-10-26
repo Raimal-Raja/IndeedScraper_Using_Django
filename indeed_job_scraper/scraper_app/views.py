@@ -42,7 +42,7 @@ def start_scraping(request):
     def download_url():
         return reverse('download_results') + '?' + urlencode({'keyword': keyword, 'country': country})
     try:
-        scraper = Scraper(stop_event=stop_event)
+        scraper = Scraper(stop_event=stop_event, browser_backend=form.cleaned_data.get('browser_backend') or 'selenium', pacing=form.cleaned_data.get('pacing') or 'slow')
         if stop_event.is_set():
             raise ScrapingStopped()
         update_run(run_id, status='running', activity=f'Searching {keyword} in {country}')
