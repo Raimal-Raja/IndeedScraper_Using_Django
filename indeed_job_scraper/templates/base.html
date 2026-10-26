@@ -7,6 +7,12 @@
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <style>
+        html { height: 100%; }
+        body { margin: 0; min-height: 100vh; min-height: 100dvh; display: flex; flex-direction: column; }
+        main { flex: 1 0 auto; min-width: 0; }
+        body > nav, body > footer { flex-shrink: 0; }
+        footer .row { row-gap: 1.5rem; }
+        footer p { overflow-wrap: anywhere; }
         .nav-link {
             color: #ffffff !important;
             margin-left: 20px;
@@ -29,8 +35,8 @@
             transform: translateY(-5px);
         }
         #logging-area {
-            height: 200px;
-            overflow-y: auto;
+            min-height: 96px;
+            overflow-wrap: anywhere;
             background-color: #f8f9fa;
             padding: 15px;
             border-radius: 5px;
@@ -62,8 +68,9 @@
         </div>
     </nav>
 
-    {% block content %}
-    {% endblock %}
+    <main id="main-content">
+        {% block content %}{% endblock %}
+    </main>
     <!-- Footer -->
 <footer class="bg-dark text-light py-4 mt-auto">
     <div class="container">
@@ -77,20 +84,14 @@
                 <ul class="list-unstyled">
                     <li><a href="{% url 'index' %}" class="text-light">Home</a></li>
                     <li><a href="{% url 'scrape_jobs' %}" class="text-light">Scrape Data</a></li>
-                    <li><a href="/privacy-policy" class="text-light">Privacy Policy</a></li>
                 </ul>
             </div>
             <div class="col-md-4">
-                <h5>Contact Us</h5>
-                <p>
-                    <i class="fas fa-envelope me-2"></i>support@datascraperpro.com<br>
-                    <i class="fas fa-phone me-2"></i>+92 (3) 1801-30173
-                </p>
-                <div>
-                    <a href="#" class="text-light me-3"><i class="fab fa-facebook-f"></i></a>
-                    <a href="#" class="text-light me-3"><i class="fab fa-twitter"></i></a>
-                    <a href="#" class="text-light"><i class="fab fa-linkedin-in"></i></a>
-                </div>
+                <h5>Connect with Raimal</h5>
+                <ul class="list-unstyled">
+                    <li class="mb-2"><a href="https://www.linkedin.com/in/raimal-raja-kolhi-860a032bb/" class="text-light" target="_blank" rel="noopener noreferrer"><i class="fab fa-linkedin-in me-2" aria-hidden="true"></i>LinkedIn</a></li>
+                    <li><a href="https://github.com/Raimal-Raja" class="text-light" target="_blank" rel="noopener noreferrer"><i class="fab fa-github me-2" aria-hidden="true"></i>GitHub</a></li>
+                </ul>
             </div>
         </div>
     </div>

@@ -1,4 +1,5 @@
 {% extends 'base.html' %}
+{% load static %}
 
 {% block content %}
 <!-- Scraping Section -->
@@ -8,7 +9,8 @@
             <div class="card">
                 <div class="card-body">
                     <h2 class="text-center mb-4">Scrape Indeed Job Data</h2>
-                    <form id="scrapeForm" method="POST" action="{% url 'scrape_jobs' %}">
+                    {{ form.non_field_errors }}
+                    <form id="scrapeForm" data-progress-url="{% url 'scrape_progress' '00000000-0000-0000-0000-000000000000' %}" data-stop-url="{% url 'stop_scraping' '00000000-0000-0000-0000-000000000000' %}" method="POST" action="{% url 'scrape_jobs' %}">
                         {% csrf_token %}
                         <div class="mb-3">
                             <label for="id_keyword" class="form-label">Job Keyword</label>
@@ -30,12 +32,17 @@
                             <button type="submit" class="btn btn-primary" id="startScrapingBtn">
                                 <i class="fas fa-search me-2"></i>Start Scraping
                             </button>
+                            <button type="button" class="btn btn-outline-danger ms-2" id="stopScrapingBtn" disabled>Stop Scraping</button>
+                            <a id="downloadResultsBtn" class="btn btn-success ms-2" hidden>Download CSV</a>
                         </div>
                     </form>
 
                     <div id="logging-area" class="mt-4" style="display: none;">
                         <h5>Scraping Progress:</h5>
-                        <div id="log-content"></div>
+                        <div id="log-content" role="status" aria-live="polite" aria-atomic="true">
+                            <div id="scrape-progress-row">Saved: 0 | Ready</div>
+                            <div id="scrape-warning-row" class="text-warning-emphasis">Warnings: None</div>
+                        </div>
                     </div>
 
                     {% if total_jobs %}
@@ -56,31 +63,5 @@
 {% endblock %}
 
 {% block extra_js %}
-<script>
-document.getElementById('scrapeForm').addEventListener('submit', function(e) {
-    e.preventDefault();
-    const form = this;
-    const loggingArea = document.getElementById('logging-area');
-    const logContent = document.getElementById('log-content');
-    
-    loggingArea.style.display = 'block';
-    logContent.innerHTML = '<div>Starting scraping process...</div>';
-    
-    fetch(form.action, {
-        method: 'POST',
-        body: new FormData(form),
-        headers: {
-            'X-Requested-With': 'XMLHttpRequest'
-        }
-    })
-    .then(response => response.json())
-    .then(data => {
-        logContent.innerHTML += `<div>Found ${data.total_jobs} jobs for "${data.keyword}" in ${data.country}</div>`;
-        window.location.href = `/download/${data.keyword}/${data.country}/`;
-    })
-    .catch(error => {
-        logContent.innerHTML += `<div class="text-danger">Error: ${error.message}</div>`;
-    });
-});
-</script>
+<script src="{% static 'js/scrape.js' %}"></script>
 {% endblock %}

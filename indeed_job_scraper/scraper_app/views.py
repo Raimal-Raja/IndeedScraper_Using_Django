@@ -4,53 +4,109 @@ from django.conf import settings
 from .forms import JobSearchForm
 from .models import JobPosting
 from .utils.Scraper import Scraper
+from .progress import create_run, get_run, update_run, stop_run, ProgressHandler, ScrapingStopped
+from uuid import uuid4, UUID
+from django.views.decorators.http import require_GET, require_POST
 import csv
+import logging
+from urllib.parse import urlencode
+from django.urls import reverse
+
+logger = logging.getLogger(__name__)
 
 def index(request):
     return render(request, 'index.html')
 
 def start_scraping(request):
-    form = JobSearchForm()
-    
-    if request.method == 'POST':
-        form = JobSearchForm(request.POST)
-        if form.is_valid():
-            keyword = form.cleaned_data['keyword']
-            country = form.cleaned_data['country']
-            
-            # Create scraper instance
-            scraper = Scraper()
-            domains = {country: settings.JOB_DOMAINS[country]}
-            
-            # Scrape jobs
-            total_jobs, blocked_domains = scraper.scrape_jobs(domains, keyword)
-            
-            # If it's an AJAX request, return JSON response
-            if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
-                return JsonResponse({
-                    'total_jobs': total_jobs,
-                    'keyword': keyword,
-                    'country': country
-                })
-            
-            context = {
-                'form': form,
-                'total_jobs': total_jobs,
-                'keyword': keyword,
-                'country': country
-            }
-            return render(request, 'results.html', context)
-    
-    return render(request, 'results.html', {'form': form})
+    ajax = request.headers.get('X-Requested-With') == 'XMLHttpRequest'
+    if request.method != 'POST':
+        return render(request, 'results.html', {'form': JobSearchForm()})
+    form = JobSearchForm(request.POST)
+    if not form.is_valid():
+        if ajax:
+            return JsonResponse({'error': 'Please correct the search fields.', 'errors': form.errors.get_json_data()}, status=400)
+        return render(request, 'results.html', {'form': form}, status=400)
+    keyword = form.cleaned_data['keyword']
+    country = form.cleaned_data['country']
+    run_id = request.POST.get('run_id') or str(uuid4())
+    try:
+        run_id = str(UUID(run_id))
+        stop_event = create_run(run_id)
+    except ValueError as exc:
+        return JsonResponse({'error': str(exc)}, status=400)
+    scraper = None
+    app_logger = logging.getLogger('scraper_app')
+    app_logger.setLevel(logging.INFO)
+    handler = ProgressHandler(run_id, lambda: getattr(scraper, 'total_jobs', 0))
+    app_logger.addHandler(handler)
+    def download_url():
+        return reverse('download_results') + '?' + urlencode({'keyword': keyword, 'country': country})
+    try:
+        scraper = Scraper(stop_event=stop_event)
+        if stop_event.is_set():
+            raise ScrapingStopped()
+        update_run(run_id, status='running', activity=f'Searching {keyword} in {country}')
+        total_jobs, blocked_domains = scraper.scrape_jobs({country: settings.JOB_DOMAINS[country]}, keyword)
+        if not total_jobs and (blocked_domains or getattr(scraper, 'errors', [])):
+            message = 'The job source blocked access or could not be reached. Check the server logs before retrying.'
+            update_run(run_id, status='failed', activity='Scraping could not continue', warning=message)
+            if ajax:
+                return JsonResponse({'error': message, 'run_id': run_id}, status=502)
+            form.add_error(None, message)
+            return render(request, 'results.html', {'form': form}, status=502)
+        update_run(run_id, status='completed', scraped=total_jobs, activity='Scraping complete', download_url=download_url() if total_jobs else None)
+        if ajax:
+            return JsonResponse({'run_id': run_id, 'status': 'completed', 'total_jobs': total_jobs, 'keyword': keyword, 'country': country,
+                                 'download_url': reverse('download_results') + '?' + urlencode({'keyword': keyword, 'country': country}) if total_jobs else None,
+                                 'warning': 'Some source pages were unavailable.' if blocked_domains or getattr(scraper, 'errors', []) else None})
+        return render(request, 'results.html', {'form': form, 'total_jobs': total_jobs, 'keyword': keyword, 'country': country})
+    except ScrapingStopped:
+        count = getattr(scraper, 'total_jobs', 0)
+        count = count if isinstance(count, int) else 0
+        update_run(run_id, status='stopped', scraped=count, activity='Stopped. Saved records are preserved.', download_url=download_url() if count else None)
+        return JsonResponse({'run_id': run_id, 'status': 'stopped', 'total_jobs': count, 'keyword': keyword, 'country': country, 'download_url': download_url() if count else None})
+    except Exception:
+        logger.exception('Scraping failed for %r in %s', keyword, country)
+        message = 'Scraping could not start or complete. Check the server logs for the browser or connection error.'
+        update_run(run_id, status='failed', activity='Scraping failed', warning=message, download_url=download_url() if isinstance(getattr(scraper, 'total_jobs', None), int) and scraper.total_jobs > 0 else None)
+        if ajax:
+            return JsonResponse({'error': message, 'run_id': run_id}, status=500)
+        form.add_error(None, message)
+        return render(request, 'results.html', {'form': form}, status=500)
+    finally:
+        app_logger.removeHandler(handler)
+        handler.close()
+        if scraper is not None:
+            try:
+                scraper.close()
+            except Exception:
+                logger.exception('Could not close the scraper browser')
 
-def download_csv(request, keyword, country):
+@require_GET
+def scraping_progress(request, run_id):
+    data = get_run(run_id)
+    return JsonResponse(data if data is not None else {'error': 'Run not found in this server process.'}, status=200 if data is not None else 404)
+
+
+@require_POST
+def stop_scraping(request, run_id):
+    data = stop_run(run_id)
+    return JsonResponse(data if data is not None else {'error': 'Run not found in this server process.'}, status=200 if data is not None else 404)
+
+
+def download_csv(request, keyword=None, country=None):
+    form = JobSearchForm({'keyword': keyword if keyword is not None else request.GET.get('keyword'),
+                          'country': country if country is not None else request.GET.get('country')})
+    if not form.is_valid():
+        return JsonResponse({'error': 'Invalid download parameters.'}, status=400)
+    keyword, country = form.cleaned_data['keyword'], form.cleaned_data['country']
     jobs = JobPosting.objects.filter(
         search_term=keyword, 
         country=country
     )
     
     response = HttpResponse(content_type='text/csv')
-    response['Content-Disposition'] = f'attachment; filename="{keyword}_{country}_jobs.csv"'
+    response['Content-Disposition'] = 'attachment; filename="jobs.csv"'
     
     writer = csv.writer(response)
     writer.writerow([
