@@ -9,10 +9,19 @@ from uuid import uuid4, UUID
 from django.views.decorators.http import require_GET, require_POST
 from .csv_export import export_search
 import logging
+import threading
+from datetime import datetime
+from pathlib import Path
+from zoneinfo import ZoneInfo
+from .utils.cloudflare_handler import BrowserStartupError
 from urllib.parse import urlencode
 from django.urls import reverse
 
 logger = logging.getLogger(__name__)
+
+class PakistanRunFormatter(logging.Formatter):
+    def formatTime(self, record, datefmt=None):
+        return datetime.fromtimestamp(record.created, ZoneInfo('Asia/Karachi')).strftime('%Y-%m-%d %H:%M:%S %z')
 
 def index(request):
     return render(request, 'index.html')
@@ -39,6 +48,28 @@ def start_scraping(request):
     app_logger.setLevel(logging.INFO)
     handler = ProgressHandler(run_id, lambda: getattr(scraper, 'total_jobs', 0), lambda: getattr(scraper, 'stats', {}))
     app_logger.addHandler(handler)
+    # A progress handler consumes log records but does not print them. Add explicit
+    # run-local terminal/file handlers so startup exceptions cannot disappear.
+    thread_id = threading.get_ident()
+    run_filter = lambda record: record.thread == thread_id
+    formatter = PakistanRunFormatter('%(asctime)s | %(levelname)s | %(name)s | %(message)s')
+    terminal_handler = logging.StreamHandler()
+    terminal_handler.setFormatter(formatter)
+    terminal_handler.addFilter(run_filter)
+    app_logger.addHandler(terminal_handler)
+    file_handler = None
+    try:
+        log_dir = Path(getattr(settings, 'SCRAPER_LOG_DIR', Path(settings.BASE_DIR) / 'logs'))
+        log_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(ZoneInfo('Asia/Karachi')).strftime('%Y%m%d_%H%M%S')
+        log_path = log_dir / f'scrape_{stamp}_{run_id}.log'
+        file_handler = logging.FileHandler(log_path, encoding='utf-8')
+        file_handler.setFormatter(formatter)
+        file_handler.addFilter(run_filter)
+        app_logger.addHandler(file_handler)
+        update_run(run_id, log_file=log_path.name)
+    except OSError:
+        logger.exception('Could not create run log; terminal logging remains enabled')
     def download_url():
         return reverse('download_results') + '?' + urlencode({'keyword': keyword, 'country': country})
     try:
@@ -98,9 +129,9 @@ def start_scraping(request):
         count = count if isinstance(count, int) else 0
         update_run(run_id, status='stopped', scraped=count, activity='Stopped. Saved records are preserved.', download_url=download_url() if count else None)
         return JsonResponse({'run_id': run_id, 'status': 'stopped', 'total_jobs': count, 'keyword': keyword, 'country': country, 'download_url': download_url() if count else None})
-    except Exception:
+    except Exception as exc:
         logger.exception('Scraping failed for %r in %s', keyword, country)
-        message = 'Scraping could not start or complete. Check the server logs for the browser or connection error.'
+        message = str(exc) if isinstance(exc, BrowserStartupError) else 'Scraping could not start or complete. Check the server logs for the browser or connection error.'
         update_run(run_id, status='failed', activity='Scraping failed', warning=message, download_url=download_url() if isinstance(getattr(scraper, 'total_jobs', None), int) and scraper.total_jobs > 0 else None)
         if ajax:
             return JsonResponse({'error': message, 'run_id': run_id}, status=500)
@@ -114,6 +145,11 @@ def start_scraping(request):
                 scraper.close()
             except Exception:
                 logger.exception('Could not close the scraper browser')
+        for run_handler in (terminal_handler, file_handler):
+            if run_handler is not None:
+                app_logger.removeHandler(run_handler)
+                run_handler.close()
+
 
 @require_GET
 def scraping_progress(request, run_id):

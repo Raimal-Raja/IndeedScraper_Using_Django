@@ -165,3 +165,28 @@ results vary: https://github.com/ultrafunkamsterdam/undetected-chromedriver
 
 Validation: 46 Django regressions and 9 frontend scenarios; live source availability
 is reported separately from fixture-based integration checks.
+
+## Browser startup and missing tracebacks
+
+Pages attempted = 0 means startup failed before an Indeed request. Run-local
+logging now explicitly writes to the Django terminal and to
+indeed_job_scraper/logs/scrape_TIMESTAMP_RUNID.log (override SCRAPER_LOG_DIR).
+Timestamps use Pakistan time. The progress snapshot includes the log filename.
+BrowserStartupError exposes the original failure type and a bounded detail
+message on the website; full tracebacks stay in the terminal/log. Unrelated
+runtime errors retain a generic message. Cleanup failures cannot replace the
+original startup exception.
+
+On Windows, installed Chrome's major is read from BLBeacon registry version
+metadata. UC first tries the newest matching-major driver in Selenium's cache.
+It copies that binary before patching it. Explicit SCRAPER_DRIVER_PATH remains
+supported. If no compatible cache entry exists, UC's automatic download remains
+available and its failure will be visible instead of a silent generic 500.
+
+Real local startup test on 27 October 2026 succeeded: installed Chrome major 155,
+cache driver 155.0.8059.84, running Chrome 155.0.8059.86, backend undetected,
+headless local page title "UC startup verified". No Indeed request or logged-in
+profile was used for this test. This verifies startup, not Indeed availability.
+
+Validation: 49 Django regressions and 9 frontend scenarios, plus the real local
+Chrome startup test. Existing database contents and exports remain untouched.

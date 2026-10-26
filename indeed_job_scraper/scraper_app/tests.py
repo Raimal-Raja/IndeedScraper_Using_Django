@@ -9,7 +9,7 @@ class ExportIsolationMixin:
         super().setUp()
         self.export_directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.export_directory.cleanup)
-        override = override_settings(SCRAPER_EXPORT_DIR=self.export_directory.name)
+        override = override_settings(SCRAPER_EXPORT_DIR=self.export_directory.name, SCRAPER_LOG_DIR=self.export_directory.name + '/logs')
         override.enable()
         self.addCleanup(override.disable)
 
@@ -534,3 +534,36 @@ class BrowserModeTests(ExportIsolationMixin, TestCase):
         with patch('scraper_app.utils.Scraper.random.uniform',return_value=1.25):
             scraper._sleep(5)
         event.wait.assert_called_once_with(6.25)
+
+
+class BrowserStartupDiagnosticsTests(ExportIsolationMixin, TestCase):
+    def test_matching_cached_driver_is_used_by_major_only(self):
+        from pathlib import Path
+        from .utils.cloudflare_handler import cached_matching_driver
+        root=Path(self.export_directory.name)/'drivers'
+        for version in ('154.0.1.0','155.0.2.0','155.0.3.0','156.0.1.0'):
+            path=root/'win64'/version/'chromedriver.exe'
+            path.parent.mkdir(parents=True)
+            path.write_bytes(b'test')
+        self.assertIn('155.0.3.0',cached_matching_driver(155,root))
+        self.assertIsNone(cached_matching_driver(157,root))
+
+    @patch('scraper_app.views.Scraper')
+    def test_startup_cause_is_visible_and_traceback_saved(self,scraper):
+        from pathlib import Path
+        from .utils.cloudflare_handler import BrowserStartupError
+        scraper.side_effect=BrowserStartupError('UC driver download failed: network unavailable')
+        response=self.client.post('/scrape/',{'keyword':'Python','country':'United States','browser_backend':'undetected'},HTTP_X_REQUESTED_WITH='XMLHttpRequest')
+        self.assertEqual(response.status_code,500)
+        self.assertIn('UC driver download failed',response.json()['error'])
+        files=list((Path(self.export_directory.name)/'logs').glob('*.log'))
+        self.assertEqual(len(files),1)
+        log=files[0].read_text(encoding='utf-8')
+        self.assertIn('Traceback',log)
+        self.assertIn('network unavailable',log)
+
+    @patch('scraper_app.utils.cloudflare_handler.webdriver.Chrome',side_effect=RuntimeError('session not created: Chrome version mismatch'))
+    def test_constructor_preserves_driver_failure_cause(self,chrome):
+        from .utils.cloudflare_handler import CloudflareHandler,BrowserStartupError
+        with self.assertRaisesRegex(BrowserStartupError,'Chrome version mismatch'):
+            CloudflareHandler(backend='selenium')

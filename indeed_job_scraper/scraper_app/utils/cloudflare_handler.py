@@ -3,6 +3,7 @@ import logging
 import importlib
 import shutil
 import tempfile
+from pathlib import Path
 from urllib.parse import urlsplit
 from django.conf import settings
 from selenium import webdriver
@@ -12,6 +13,39 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 
 logger = logging.getLogger(__name__)
+
+class BrowserStartupError(RuntimeError):
+    """A browser configuration/download/startup failure safe to show locally."""
+
+def installed_chrome_major():
+    try:
+        import winreg
+        for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+            for key in (r'Software\Google\Chrome\BLBeacon', r'Software\WOW6432Node\Google\Chrome\BLBeacon'):
+                try:
+                    with winreg.OpenKey(hive, key) as handle:
+                        version, _ = winreg.QueryValueEx(handle, 'version')
+                        return int(version.split('.')[0])
+                except OSError:
+                    continue
+    except ImportError:
+        pass
+    return None
+
+def cached_matching_driver(major=None, cache=None):
+    major = major or installed_chrome_major()
+    if major is None:
+        return None
+    cache = Path(cache) if cache else Path.home() / '.cache' / 'selenium' / 'chromedriver'
+    candidates = []
+    for candidate in cache.glob(f'*/{major}.*/*chromedriver*'):
+        if candidate.is_file() and candidate.name in ('chromedriver.exe', 'chromedriver'):
+            try:
+                version = tuple(int(part) for part in candidate.parent.name.split('.'))
+            except ValueError:
+                continue
+            candidates.append((version, candidate))
+    return str(max(candidates)[1]) if candidates else None
 
 class SourceAccessBlocked(RuntimeError):
     """A source access challenge, distinct from an ordinary parsing failure."""
@@ -26,7 +60,13 @@ class CloudflareHandler:
             raise ValueError('Unsupported browser backend')
         self._driver_copy = None
         self.driver = None
-        self._setup_driver()
+        try:
+            self._setup_driver()
+        except BrowserStartupError:
+            raise
+        except Exception as exc:
+            detail = ' '.join(str(exc).splitlines()[:3]).strip()[:600] or type(exc).__name__
+            raise BrowserStartupError(f'{self.backend} browser could not start ({type(exc).__name__}): {detail}. Check the driver version/path, network access for driver downloads, and whether the configured Chrome profile is already open.') from exc
 
     def _setup_driver(self):
         uc = None
@@ -34,7 +74,7 @@ class CloudflareHandler:
             try:
                 uc = importlib.import_module('undetected_chromedriver')
             except ImportError as exc:
-                raise RuntimeError('UC mode is unavailable. Install undetected-chromedriver==3.5.5 and setuptools in the server Python environment, or select Standard Chrome.') from exc
+                raise BrowserStartupError('UC mode is unavailable. Install undetected-chromedriver==3.5.5 and setuptools in the server Python environment, or select Standard Chrome.') from exc
             class SandboxedOptions(uc.ChromeOptions):
                 def add_argument(self, argument):
                     if argument not in ('--no-sandbox', '--ignore-certificate-errors'):
@@ -52,6 +92,13 @@ class CloudflareHandler:
             profile.mkdir(parents=True, exist_ok=True)
             options.add_argument(f'--user-data-dir={profile}')
         driver_path = getattr(settings, 'SCRAPER_DRIVER_PATH', None)
+        major = getattr(settings, 'SCRAPER_CHROME_MAJOR', None) or installed_chrome_major()
+        if uc is not None and not driver_path:
+            driver_path = cached_matching_driver(major)
+            if driver_path:
+                logger.info('Using cached matching ChromeDriver for Chrome %s: %s', major, driver_path)
+            else:
+                logger.info('No matching cached UC driver; automatic driver download may require network access')
         try:
             if uc is not None:
                 # UC patches its driver; never modify the standard driver's configured binary.
@@ -69,14 +116,17 @@ class CloudflareHandler:
                             logger.debug('UC driver handle was already closed', exc_info=True)
                 self.driver = WindowsChrome(options=options, driver_executable_path=driver_path,
                                             headless=getattr(settings, 'SCRAPER_HEADLESS', False),
-                                            version_main=getattr(settings, 'SCRAPER_CHROME_MAJOR', None),
+                                            version_main=major,
                                             use_subprocess=True, no_sandbox=False)
             else:
                 self.driver = webdriver.Chrome(service=Service(driver_path) if driver_path else Service(), options=options)
             logger.info('Browser backend: %s | headless: %s', self.backend, getattr(settings, 'SCRAPER_HEADLESS', False))
             self.driver.set_page_load_timeout(45)
         except Exception:
-            self.close()
+            try:
+                self.close()
+            except Exception:
+                logger.warning('Browser cleanup failed during startup', exc_info=True)
             logger.exception('Chrome initialization failed; check Chrome and SCRAPER_DRIVER_PATH')
             raise
 
