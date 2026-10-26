@@ -14,7 +14,7 @@
         if (data.warning) latestWarning = data.warning;
         if (data.stats) latestStats = data.stats;
         const stats = latestStats;
-        const counts = `Pages: ${stats.pages_visited || 0} | Found: ${stats.found || 0} | Saved: ${saved} | Duplicates: ${stats.duplicates || 0} | Skipped/errors: ${(stats.missing_title || 0) + (stats.missing_job_key || 0) + (stats.extraction_errors || 0) + (stats.database_errors || 0)}`;
+        const counts = `Pages read: ${stats.pages_visited || 0} (attempted: ${stats.pages_attempted || 0}) | Found: ${stats.found || 0} | Saved: ${saved} | Updated: ${stats.updated || 0} | Duplicates: ${stats.duplicates || 0} | Skipped/errors: ${(stats.missing_title || 0) + (stats.missing_job_key || 0) + (stats.extraction_errors || 0) + (stats.database_errors || 0)}`;
         progress.textContent = `${counts} | ${data.activity || data.status || 'Scraping...'}`;
         warning.textContent = `Warnings: ${latestWarning || 'None'}`;
         if (data.download_url && (saved > 0 || data.available_jobs > 0)) {

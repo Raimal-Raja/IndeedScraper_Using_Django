@@ -52,9 +52,9 @@ def start_scraping(request):
         failed_cards = sum(stats.get(key, 0) for key in ('missing_title', 'missing_job_key', 'extraction_errors', 'database_errors'))
         available = JobPosting.objects.filter(search_term=keyword, country=country).count()
         summary = (f"Found: {stats.get('found', 0)} | Saved: {total_jobs} | "
-                   f"Duplicates: {stats.get('duplicates', 0)} | Skipped/errors: {failed_cards} | "
+                   f"Updated: {stats.get('updated', 0)} | Duplicates: {stats.get('duplicates', 0)} | Skipped/errors: {failed_cards} | "
                    f"Missing full descriptions: {stats.get('missing_description', 0)} | Pages: {stats.get('pages_visited', 0)}")
-        if not total_jobs and (blocked_domains or getattr(scraper, 'errors', []) or failed_cards):
+        if not (total_jobs or stats.get('updated')) and (blocked_domains or getattr(scraper, 'errors', []) or failed_cards):
             if blocked_domains:
                 message = 'The job source blocked access. ' + summary
             elif failed_cards:
@@ -67,9 +67,9 @@ def start_scraping(request):
                 return JsonResponse({'error': message, 'run_id': run_id, 'stats': stats}, status=422 if failed_cards else 502)
             form.add_error(None, message)
             return render(request, 'results.html', {'form': form}, status=502)
-        if total_jobs and (blocked_domains or getattr(scraper, 'errors', [])):
+        if (total_jobs or stats.get('updated')) and (blocked_domains or getattr(scraper, 'errors', [])):
             message = 'Partial results saved. Some source pages were unavailable; CSV is ready to download.'
-        elif total_jobs:
+        elif total_jobs or stats.get('updated'):
             message = 'Scraping complete. CSV is ready to download.'
         elif stats.get('duplicates'):
             message = 'No new jobs: recognized listings are already saved.'
@@ -77,7 +77,11 @@ def start_scraping(request):
             message = 'The source returned no matching listings.'
         warning = summary if failed_cards or stats.get('missing_description') else ('Some source pages were unavailable. ' + summary if blocked_domains or getattr(scraper, 'errors', []) else '')
         if stats.get('login_required'):
-            warning = 'Indeed requires login for full descriptions; only available listing data was retained. ' + summary
+            warning = 'Some job descriptions required Indeed login; other public descriptions were still attempted. ' + summary
+        if blocked_domains or getattr(scraper, 'errors', []):
+            failures = getattr(scraper, 'errors', [])
+            reason = str(failures[0]).splitlines()[0][:240] if failures else 'Source access was blocked.'
+            warning = (warning + ' | ' if warning else '') + f"Pagination stopped: {reason} Read {stats.get('pages_visited', 0)} pages from {stats.get('pages_attempted', 0)} attempts."
         if stats.get('csv_errors'):
             warning = f"CSV checkpoint errors: {stats['csv_errors']}. Jobs are saved in the database. " + warning
         result_url = download_url() if total_jobs or available else None

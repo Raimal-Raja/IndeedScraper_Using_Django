@@ -319,7 +319,7 @@ class ExportAndDescriptionTests(ExportIsolationMixin, TestCase):
             with files[0].open(encoding='utf-8-sig',newline='') as handle:
                 self.assertEqual(len(list(csv.DictReader(handle))),scraper.total_jobs)
 
-    def test_login_gated_descriptions_are_not_retried_for_every_job(self):
+    def test_login_gate_is_classified_per_job_without_retrying_same_job(self):
         from bs4 import BeautifulSoup
         from .utils.Scraper import Scraper
         with patch.object(Scraper,'_initialize_driver'):
@@ -331,8 +331,8 @@ class ExportAndDescriptionTests(ExportIsolationMixin, TestCase):
             card=BeautifulSoup(f'<div data-jk="{key}"><h2 class="jobTitle"><a>Developer</a></h2><div class="job-snippet">Public listing summary</div></div>','html.parser').div
             row=scraper._extract_job_data(card,'https://www.indeed.com/','Python','United States')
             self.assertIn('Listing summary',row['job_description'])
-        self.assertEqual(scraper.cf_handler.get_page.call_count,1)
-        self.assertEqual(scraper.stats['login_required'],1)
+        self.assertEqual(scraper.cf_handler.get_page.call_count,2)
+        self.assertEqual(scraper.stats['login_required'],2)
         self.assertEqual(scraper.stats['missing_description'],2)
 
     def test_company_url_comes_from_source_not_invented_slug(self):
@@ -367,3 +367,57 @@ class ExportAndDescriptionTests(ExportIsolationMixin, TestCase):
             scraper._scrape_country('https://www.indeed.com/','Python','United States')
         click.assert_called_once()
         self.assertEqual(scraper.stats['pages_visited'],2)
+
+
+class LinkAndRefreshTests(ExportIsolationMixin, TestCase):
+    def scraper(self):
+        from .utils.Scraper import Scraper
+        with patch.object(Scraper, '_initialize_driver'):
+            result=Scraper()
+        result._sleep=Mock()
+        result.cf_handler=Mock()
+        return result
+
+    def test_actual_source_href_is_fetched_and_kept(self):
+        from bs4 import BeautifulSoup
+        scraper=self.scraper()
+        card=BeautifulSoup('<div data-jk="source123"><h2 class="jobTitle"><a href="/rc/clk?jk=source123&amp;from=search">Developer</a></h2></div>','html.parser').div
+        with patch.object(scraper,'_get_job_description',return_value='Full description') as fetch:
+            row=scraper._extract_job_data(card,'https://www.indeed.com/','Python','United States')
+        expected='https://www.indeed.com/rc/clk?jk=source123&from=search'
+        fetch.assert_called_once_with(expected)
+        self.assertEqual(row['job_url'],expected)
+
+    def test_one_login_does_not_skip_next_public_description(self):
+        from bs4 import BeautifulSoup
+        scraper=self.scraper()
+        scraper.cf_handler.get_page.side_effect=[LoginRequired('login required'),'<div id="jobDescriptionText">Public full description</div>']
+        rows=[]
+        for key in ('gated','public'):
+            card=BeautifulSoup(f'<div data-jk="{key}"><h2 class="jobTitle"><a>Developer</a></h2></div>','html.parser').div
+            rows.append(scraper._extract_job_data(card,'https://www.indeed.com/','Python','United States'))
+        self.assertEqual(rows[0]['job_description'],'')
+        self.assertEqual(rows[1]['job_description'],'Public full description')
+        self.assertEqual(scraper.cf_handler.get_page.call_count,2)
+
+    def test_existing_incomplete_job_is_repaired_without_duplicate_row(self):
+        from .models import JobPosting
+        from bs4 import BeautifulSoup
+        record=JobPosting.objects.create(title='Developer',company_name='Company',company_location='Remote',job_url='https://www.indeed.com/viewjob?jk=repair123',job_description='',post_date='2026-10-26',search_term='Python',country='United States')
+        scraper=self.scraper()
+        soup=BeautifulSoup('<div class="job_seen_beacon" data-jk="repair123"><h2 class="jobTitle"><a href="/rc/clk?jk=repair123">Developer</a></h2><a href="/cmp/real-company">Company</a></div>','html.parser')
+        with patch.object(scraper,'_get_job_description',return_value='Recovered description'):
+            scraper._process_job_cards(soup,'https://www.indeed.com/','Python','United States')
+        record.refresh_from_db()
+        self.assertEqual(record.job_description,'Recovered description')
+        self.assertEqual(record.company_detail_url,'https://www.indeed.com/cmp/real-company')
+        self.assertEqual(record.job_url,'https://www.indeed.com/rc/clk?jk=repair123')
+        self.assertEqual(JobPosting.objects.count(),1)
+        self.assertEqual(scraper.stats['updated'],1)
+        self.assertEqual(scraper.total_jobs,0)
+
+    def test_public_structured_job_description(self):
+        from bs4 import BeautifulSoup
+        scraper=self.scraper()
+        soup=BeautifulSoup('<script type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"JobPosting","description":"<p>Public <b>description</b></p>"}]}</script>','html.parser')
+        self.assertEqual(scraper._description_from_soup(soup),'Public description')

@@ -86,3 +86,36 @@ Pakistan time, for example united_states_python_developer_10_26_2026.csv.
 Validation: 33 Django regressions and 9 frontend scenarios. Live source login or
 access restrictions are not bypassed. These tests verify behavior with fixtures
 and mocks; they do not guarantee that Indeed makes full descriptions public.
+
+## Source links, incomplete-record repair, and real access limits
+
+The latest live diagnostic returned "Blocked - Indeed.com" before exposing any
+listing links. No full live-description success is claimed from that connection.
+A source login requirement or access block cannot be repaired by inventing URLs
+or suppressing the warning.
+
+Description login detection is now per job. A gated first result no longer skips
+all later public descriptions. The scraper follows and saves the supplied Indeed
+title href when available instead of rebuilding every detail URL. Public
+JobPosting JSON-LD descriptions are accepted alongside rendered description text.
+Existing incomplete records are eligible for update, deduplicated by job key,
+without deleting the record or replacing an existing nonempty value with blank.
+The display distinguishes newly saved jobs from updated records. Source-provided
+company /cmp/ links are recognized even without the older CSS test identifiers.
+
+Pages read counts successfully parsed listing pages. Page attempts also count
+failed navigation, so a blocked second-page request is no longer shown as two
+successfully scraped pages. The final warning includes why pagination stopped,
+instead of allowing a description-login warning to hide the collection failure.
+
+Optional manual-login persistence: set SCRAPER_CHROME_PROFILE_DIR in Django
+settings to a dedicated directory, e.g. BASE_DIR / '.scraper-browser'. Use only a
+separate scraper profile, not the normal Chrome profile while Chrome is running.
+Sign in yourself using that profile and close that browser before scraping.
+The application does not collect credentials or automate login. Use one scraper
+browser at a time with a shared profile. Keep this directory out of version
+control; it contains browser session data. A saved login is not a guarantee that
+Indeed will permit automated requests.
+
+Validation: 37 Django tests and 9 frontend scenarios (fixture/mocked source
+operations). Existing database contents and exports are not overwritten by tests.

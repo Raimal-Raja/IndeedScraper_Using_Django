@@ -22,6 +22,12 @@ class CloudflareHandler:
         options = Options()
         if getattr(settings, 'SCRAPER_HEADLESS', False):
             options.add_argument('--headless=new')
+        profile = getattr(settings, 'SCRAPER_CHROME_PROFILE_DIR', None)
+        if profile:
+            from pathlib import Path
+            profile = Path(profile).resolve()
+            profile.mkdir(parents=True, exist_ok=True)
+            options.add_argument(f'--user-data-dir={profile}')
         driver_path = getattr(settings, 'SCRAPER_DRIVER_PATH', None)
         try:
             self.driver = webdriver.Chrome(service=Service(driver_path) if driver_path else Service(), options=options)

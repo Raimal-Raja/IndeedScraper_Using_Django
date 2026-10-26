@@ -2,6 +2,8 @@ from bs4 import BeautifulSoup
 from urllib.parse import urljoin, quote_plus, urlsplit, parse_qs
 from collections import Counter
 import re
+import json
+from django.db.models import Q
 import time
 import logging
 from dataclasses import dataclass
@@ -62,7 +64,8 @@ class Scraper:
         ],
         'company_link': [
             'a[data-testid="company-link"]',
-            'span[data-testid="company-name"] a'
+            'span[data-testid="company-name"] a',
+            'a[href*="/cmp/"]'
         ],
         'job_cards': [
             'div.job_seen_beacon',
@@ -83,6 +86,7 @@ class Scraper:
         self.seen_job_urls = set()
         self.errors = []
         self.detail_login_required = False
+        self.last_description_login = False
         self.blocked_domains = {}
         self._initialize_driver()
 
@@ -186,7 +190,7 @@ class Scraper:
 
     def summary(self):
         return (f"Found: {self.stats['found']} | Saved: {self.total_jobs} | "
-                f"Duplicates: {self.stats['duplicates']} | "
+                f"Updated: {self.stats['updated']} | Duplicates: {self.stats['duplicates']} | "
                 f"Missing title/ID: {self.stats['missing_title'] + self.stats['missing_job_key']} | "
                 f"Extraction/database errors: {self.stats['extraction_errors'] + self.stats['database_errors']} | "
                 f"Missing full descriptions: {self.stats['missing_description']} | Pages: {self.stats['pages_visited']}")
@@ -265,7 +269,7 @@ class Scraper:
                 self.logger.info(f"Processing page {page + 1} for {country}")
 
                 html, preloaded_html = preloaded_html, None
-                self.stats['pages_visited'] += 1
+                self.stats['pages_attempted'] += 1
                 for retry in range(self.config.MAX_RETRIES):
                     if html:
                         break
@@ -283,6 +287,7 @@ class Scraper:
                 if not self._validate_page_content(soup, country):
                     break
 
+                self.stats['pages_visited'] += 1
                 jobs_processed = self._process_job_cards(soup, base_url, job_search, country)
                 if jobs_processed == 0:
                     self.logger.info("Page %s saved no new jobs. %s. Checking the next page.", page + 1, self.summary())
@@ -332,10 +337,25 @@ class Scraper:
                 job_data = self._extract_job_data(card, base_url, job_search, country)
                 if job_data is None:
                     continue
-                job_posting = JobPosting.objects.create(**job_data)
+                existing_pk = job_data.pop('_existing_pk', None)
+                if existing_pk:
+                    job_posting = JobPosting.objects.get(pk=existing_pk)
+                    changed = []
+                    for field in ('job_url', 'company_detail_url', 'job_description', 'company_location', 'company_name'):
+                        value = job_data.get(field)
+                        if value and value != 'N/A' and getattr(job_posting, field) != value:
+                            setattr(job_posting, field, value)
+                            changed.append(field)
+                    if changed:
+                        job_posting.save(update_fields=changed)
+                        self.stats['updated'] += 1
+                        jobs_processed += 1
+                        self.logger.info('Updated existing job: %s (%s)', job_posting.title, ', '.join(changed))
+                else:
+                    job_posting = JobPosting.objects.create(**job_data)
+                    self.total_jobs += 1
+                    jobs_processed += 1
                 self.seen_job_urls.add(job_data['job_url'])
-                self.total_jobs += 1
-                jobs_processed += 1
                 self.stats['saved'] = self.total_jobs
                 try:
                     path, _ = export_search(job_search, country)
@@ -369,11 +389,21 @@ class Scraper:
             if not job_key or not re.fullmatch(r'[A-Za-z0-9_-]+', job_key):
                 self._skip('missing_job_key', 'No job ID on the title, card, href, or anchor ID')
                 return None
-            job_url = urljoin(base_url, f'viewjob?jk={job_key}')
-            if job_url in self.seen_job_urls or self.duplicate_checker.is_duplicate(job_url):
+            canonical = urljoin(base_url, f'viewjob?jk={job_key}')
+            supplied = urljoin(base_url, title_elem.get('href', ''))
+            parts = urlsplit(supplied)
+            source_host = urlsplit(base_url).hostname or ''
+            job_url = supplied if parts.scheme == 'https' and parts.hostname == source_host and parts.path not in ('', '/') else canonical
+            if job_url in self.seen_job_urls:
                 self.stats['duplicates'] += 1
-                self.logger.info('Already saved: %s', job_url)
                 return None
+            identity = r'[?&](?:v?jk)=' + re.escape(job_key) + r'(?:&|$)'
+            existing = JobPosting.objects.filter(Q(job_url=canonical) | Q(job_url=job_url) | Q(job_url__regex=identity)).first()
+            if existing:
+                self.stats['duplicates'] += 1
+                if existing.job_description and not existing.job_description.startswith('[Listing summary') and existing.company_detail_url and existing.job_url == job_url:
+                    self.logger.info('Already complete: %s', job_url)
+                    return None
 
             company_name = self._get_element_text(card, self.SELECTORS['company_name'])
             location = self._get_element_text(card, self.SELECTORS['company_location'])
@@ -385,12 +415,13 @@ class Scraper:
 
             company_detail_url = self._extract_company_detail_url(card, base_url, job_url)
 
-            job_desc = None
-            if not self.detail_login_required:
+            job_desc = existing.job_description if existing and existing.job_description and not existing.job_description.startswith('[Listing summary') else None
+            if not job_desc:
                 for retry in range(self.config.MAX_RETRIES):
                     self._check_stop()
+                    self.last_description_login = False
                     job_desc = self._get_job_description(job_url)
-                    if job_desc or self.detail_login_required:
+                    if job_desc or self.last_description_login:
                         break
                     self._sleep(self.config.RETRY_DELAYS[retry])
             if not job_desc:
@@ -401,10 +432,11 @@ class Scraper:
                     self.stats['partial_description'] += 1
                 else:
                     job_desc = ''
-                reason = 'Indeed login required' if self.detail_login_required else 'description not available in the loaded page'
+                reason = 'Indeed login required for this job' if self.last_description_login else 'description not available in the loaded page'
                 self.logger.warning('Full description unavailable (%s) for %s; listing retained', reason, job_url)
 
             return {
+                **({'_existing_pk': existing.pk} if existing else {}),
                 'post_date': self._extract_post_date(card),
                 'title': title_elem.get_text(strip=True),
                 'company_name': company_name,
@@ -433,25 +465,51 @@ class Scraper:
         # Do not invent a company URL from its name.
         return ''
 
+    def _description_from_soup(self, soup):
+        description = self._get_element_text(soup, self.SELECTORS['job_description'], default='')
+        if description:
+            return description
+        def postings(value):
+            if isinstance(value, list):
+                for item in value:
+                    yield from postings(item)
+            elif isinstance(value, dict):
+                kind = value.get('@type', '')
+                if kind == 'JobPosting' or isinstance(kind, list) and 'JobPosting' in kind:
+                    yield value
+                if '@graph' in value:
+                    yield from postings(value['@graph'])
+        for script in soup.select('script[type="application/ld+json"]'):
+            try:
+                data = json.loads(script.string or script.get_text())
+            except (ValueError, TypeError):
+                continue
+            for posting in postings(data):
+                raw = posting.get('description')
+                if isinstance(raw, str) and raw.strip():
+                    return BeautifulSoup(raw, 'html.parser').get_text(' ', strip=True)
+        return ''
+
     def _get_job_description(self, url: str) -> Optional[str]:
         try:
             if html := self.cf_handler.get_page(url):
                 soup = BeautifulSoup(html, 'html.parser')
-                description = self._get_element_text(soup, self.SELECTORS['job_description'], default='')
+                description = self._description_from_soup(soup)
                 if description:
                     return description
                 def loaded(driver):
                     self._check_stop()
                     current = BeautifulSoup(driver.page_source, 'html.parser')
-                    return self._get_element_text(current, self.SELECTORS['job_description'], default='') or False
+                    return self._description_from_soup(current) or False
                 try:
                     return WebDriverWait(self.cf_handler.driver, getattr(settings, 'SCRAPER_DESCRIPTION_WAIT', 8)).until(loaded)
                 except TimeoutException:
                     return None
         except LoginRequired:
             self.detail_login_required = True
+            self.last_description_login = True
             self.stats['login_required'] += 1
-            self.logger.warning('Indeed requires login for full job descriptions. Remaining listing data will be kept; repeated login-page requests are disabled.')
+            self.logger.warning('This Indeed job requires login for its description. Its listing is retained; other public descriptions will still be attempted.')
         except ScrapingStopped:
             raise
         except Exception as e:
