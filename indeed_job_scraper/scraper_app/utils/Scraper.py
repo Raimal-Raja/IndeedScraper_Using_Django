@@ -1,15 +1,13 @@
 from bs4 import BeautifulSoup
-from urllib.parse import urljoin, quote_plus
+from urllib.parse import urljoin, quote_plus, urlsplit, parse_qs
+from collections import Counter
+import re
 import time
 import logging
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 from selenium.common.exceptions import TimeoutException
-from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-import requests
-import random
 # imported files
 from .cloudflare_handler import CloudflareHandler
 from scraper_app.models import JobPosting
@@ -27,9 +25,9 @@ class ScraperConfig:
 
 class Scraper:
     SELECTORS = {
-        'job_title': 'h2[class*="jobTitle"] a',
+        'job_title': 'h2[class*="jobTitle"] a, a.jcs-JobTitle, a[data-jk], a[id^="job_"], a[href*="jk="]',
         'company_name': [
-            'span[data-testid="company-name"]', 
+            'span[data-testid="company-name"]',
             'a[data-testid="company-link"]',
             'span[class*="companyName"]',
             'a[class*="companyName"]'
@@ -53,10 +51,9 @@ class Scraper:
         ],
         'next_page': [
             'a[aria-label="Next"]',
-            'a[data-testid="pagination-page-next"]', 
+            'a[data-testid="pagination-page-next"]',
             'a[class*="pagination-next"]',
-            'a[href*="start="]',
-            'nav[role="navigation"] a[href*="start="]'
+            'a[aria-label="Next Page"]'
         ],
         'company_link': [
             'a[data-testid="company-link"]',
@@ -77,6 +74,8 @@ class Scraper:
         self.cf_handler = None
         self.duplicate_checker = DuplicateChecker()
         self.total_jobs = 0
+        self.stats = Counter()
+        self.seen_job_urls = set()
         self.errors = []
         self.blocked_domains = {}
         self._initialize_driver()
@@ -112,51 +111,54 @@ class Scraper:
         except Exception as e:
             self.logger.error(f"Error extracting element text: {str(e)}")
             return default
-    def get_page(self, url):
+    def _listing_soup(self, html):
+        """Wait for dynamic cards, then parse the current DOM instead of an old snapshot."""
+        def ready(source):
+            soup = BeautifulSoup(source, 'html.parser')
+            visible = soup.get_text(' ', strip=True).lower()
+            if any(soup.select(selector) for selector in self.SELECTORS['job_cards']):
+                return soup
+            if any(term in visible for term in ('no jobs found', 'did not match any jobs', 'no results found', 'access denied', 'verify you are human', 'verify that you are human', 'slide to verify')):
+                return soup
+            return None
+        soup = ready(html)
+        if soup is not None:
+            return soup
         try:
-            self.driver.get(url)
-            WebDriverWait(self.driver, 20).until(
-                EC.presence_of_all_elements_located((By.CSS_SELECTOR, 'div.job_seen_beacon'))  # Wait for job cards to load
-            )
-            return self.driver.page_source
-        except ScrapingStopped:
-            raise
-        except Exception as e:
-            logging.error(f"Error accessing page: {str(e)}")
-            return None
-    
-    def _has_next_page(self, soup: BeautifulSoup) -> Optional[str]:
-        """Enhanced next page detection that returns the next page URL"""
-        try:
-            for selector in self.SELECTORS['next_page']:
-                next_page = soup.select_one(selector)
-                if next_page and next_page.get('href'):
-                    return next_page['href']
-                
-            # Fallback pagination check - look for numbered pagination
-            pagination = soup.select('nav[role="navigation"] a')
-            current_page = None
-            for page in pagination:
-                if 'aria-current' in page.attrs:
-                    try:
-                        current_page = int(page.get_text(strip=True))
-                        break
-                    except ValueError:
-                        continue
-            
-            if current_page is not None:
-                next_page_num = current_page + 1
-                next_page_elem = soup.select_one(f'a[href*="start={next_page_num * self.config.RESULTS_PER_PAGE}"]')
-                if next_page_elem:
-                    return next_page_elem['href']
-            
-            return None
-        except ScrapingStopped:
-            raise
-        except Exception as e:
-            self.logger.error(f"Error checking next page: {str(e)}")
-            return None
-        
+            return WebDriverWait(self.cf_handler.driver, 20).until(lambda driver: ready(driver.page_source))
+        except TimeoutException as exc:
+            raise RuntimeError('Listings did not load or the page layout is unsupported; this is not a confirmed empty search') from exc
+
+    def _has_next_page(self, soup, current_url=None):
+        for selector in self.SELECTORS['next_page']:
+            link = soup.select_one(selector)
+            if link and link.get('href') and link.get('aria-disabled') != 'true':
+                return link['href']
+        if current_url:
+            current = int(parse_qs(urlsplit(current_url).query).get('start', ['0'])[0])
+            candidates = []
+            for link in soup.select('nav[role="navigation"] a[href]'):
+                try:
+                    offset = int(parse_qs(urlsplit(link['href']).query).get('start', ['0'])[0])
+                except ValueError:
+                    continue
+                if offset > current:
+                    candidates.append((offset, link['href']))
+            if candidates:
+                return min(candidates)[1]
+        return None
+
+    def _skip(self, reason, message):
+        self.stats[reason] += 1
+        self.logger.warning('Skipped listing (%s): %s', reason, message)
+
+    def summary(self):
+        return (f"Found: {self.stats['found']} | Saved: {self.total_jobs} | "
+                f"Duplicates: {self.stats['duplicates']} | "
+                f"Missing title/ID: {self.stats['missing_title'] + self.stats['missing_job_key']} | "
+                f"Extraction/database errors: {self.stats['extraction_errors'] + self.stats['database_errors']} | "
+                f"Missing descriptions: {self.stats['missing_description']}")
+
     def _validate_page_content(self, soup: BeautifulSoup, country: str) -> bool:
         try:
             # Listing cards establish results; incidental words in job descriptions
@@ -171,14 +173,17 @@ class Scraper:
                 self.logger.warning(f"Access blocked for {country}")
                 return False
 
-            self.logger.warning(f"No job cards found for {country}")
-            return False
+            if any(term in page_text for term in ('no jobs found', 'did not match any jobs', 'no results found')):
+                self.stats['empty_pages'] += 1
+                self.logger.info('The source explicitly reports no jobs for %s', country)
+                return False
+            raise RuntimeError('No recognizable job cards; unsupported page layout, not confirmed zero jobs')
 
         except ScrapingStopped:
             raise
         except Exception as e:
             self.logger.error(f"Error validating page content: {str(e)}")
-            return False
+            raise
 
     def scrape_jobs(self, domains: Dict[str, str], job_search: str) -> tuple[int, Dict[str, float]]:
         try:
@@ -207,19 +212,25 @@ class Scraper:
         except KeyboardInterrupt:
             self.logger.info("\nScraping stopped by user")
             self.close()
-        
+
+        self.logger.info(self.summary())
         return self.total_jobs, self.blocked_domains
 
     def _scrape_country(self, base_url: str, job_search: str, country: str) -> None:
         page = 0
-        search_url = f"{base_url}jobs?q={quote_plus(job_search)}&l=&fromage=1"
+        search_url = f"{base_url}jobs?q={quote_plus(job_search)}&l="
         current_url = search_url
-        
+        visited_pages = set()
+
         while page < self.config.MAX_PAGES:
             self._check_stop()
+            if current_url in visited_pages:
+                self.logger.warning("Pagination repeated a page; stopping this country")
+                break
+            visited_pages.add(current_url)
             try:
                 self.logger.info(f"Processing page {page + 1} for {country}")
-                
+
                 html = None
                 for retry in range(self.config.MAX_RETRIES):
                     self._check_stop()
@@ -232,27 +243,25 @@ class Scraper:
                 if not html:
                     raise RuntimeError(f"Failed to get HTML content for {country} page {page + 1}")
 
-                soup = BeautifulSoup(html, "html.parser")
+                soup = self._listing_soup(html)
                 if not self._validate_page_content(soup, country):
                     break
-                
-                WebDriverWait(self.cf_handler.driver, 20).until(
-                EC.presence_of_all_elements_located((By.CSS_SELECTOR, 'div.job_seen_beacon'))
-            )
-                
+
                 jobs_processed = self._process_job_cards(soup, base_url, job_search, country)
                 if jobs_processed == 0:
-                    self.logger.warning(f"No jobs processed on page {page + 1} for {country}")
-                    break
+                    self.logger.info("Page %s saved no new jobs. %s. Checking the next page.", page + 1, self.summary())
 
-                next_page_url = self._has_next_page(soup)
+                next_page_url = self._has_next_page(soup, current_url)
                 if not next_page_url:
                     self.logger.info(f"No more pages available for {country}")
                     break
 
-                current_url = urljoin(base_url, next_page_url)
+                next_url = urljoin(base_url, next_page_url)
+                if urlsplit(next_url).hostname != urlsplit(base_url).hostname:
+                    raise RuntimeError("Pagination points outside the selected job source")
+                current_url = next_url
                 page += 1
-                
+
                 self._sleep(self.config.PAGE_DELAY)
 
             except ScrapingStopped:
@@ -263,51 +272,63 @@ class Scraper:
 
     def _process_job_cards(self, soup: BeautifulSoup, base_url: str, job_search: str, country: str) -> int:
         jobs_processed = 0
-        
+
+        # Choose one matching card family; overlapping selectors otherwise repeat cards.
+        job_cards = []
         for selector in self.SELECTORS['job_cards']:
             job_cards = soup.select(selector)
-            if not job_cards:
-                continue
-                
-            for card in job_cards:
-                self._check_stop()
-                try:
-                    self._sleep(random.uniform(1.5, 3.0))
-                #     WebDriverWait(self, 10).until(
-                #     EC.presence_of_element_located((By.CSS_SELECTOR, selector))
-                # )
-                    self.logger.info("Extracting job: %s", self._get_element_text(card, [self.SELECTORS['job_title']]))
-                    job_data = self._extract_job_data(card, base_url, job_search, country)
-                    if job_data:
-                        # Each record is committed before counting it as saved.
-                        # Create JobPosting model instance directly
-                        job_posting = JobPosting.objects.create(**job_data)
-                        self.total_jobs += 1
-                        jobs_processed += 1
-                        self.logger.info(f"Saved job: {job_posting.title} from {country}")
-                        self._sleep(random.uniform(0.5, 1.5))
-                except ScrapingStopped:
-                    raise
-                except Exception as e:
-                    self.logger.error(f"Error processing job card: {str(e)}")
+            if job_cards:
+                break
+        self.stats['found'] += len(job_cards)
+        self.logger.info('Found %s listing cards', len(job_cards))
+        for card in job_cards:
+            self._check_stop()
+            try:
+                self._sleep(self.config.PAGE_DELAY)
+                self.logger.info('Extracting job: %s', self._get_element_text(card, [self.SELECTORS['job_title']]))
+                job_data = self._extract_job_data(card, base_url, job_search, country)
+                if job_data is None:
                     continue
-                    
+                job_posting = JobPosting.objects.create(**job_data)
+                self.seen_job_urls.add(job_data['job_url'])
+                self.total_jobs += 1
+                jobs_processed += 1
+                self.stats['saved'] = self.total_jobs
+                self.logger.info('Saved job: %s from %s. %s', job_posting.title, country, self.summary())
+                self._sleep(self.config.PAGE_DELAY)
+            except ScrapingStopped:
+                raise
+            except Exception as exc:
+                if 'blocked' in str(exc).lower():
+                    raise
+                self._skip('database_errors', str(exc))
         return jobs_processed
+
     def _extract_job_data(self, card: BeautifulSoup, base_url: str, job_search: str, country: str) -> Optional[Dict]:
         try:
             title_elem = card.select_one(self.SELECTORS['job_title'])
-            if not title_elem or 'data-jk' not in title_elem.attrs:
+            if title_elem is None or not title_elem.get_text(strip=True):
+                self._skip('missing_title', 'No recognizable job title link')
                 return None
-
-            job_key = title_elem['data-jk']
-            job_url = urljoin(base_url, f"viewjob?jk={job_key}")
-            
-            if self.duplicate_checker.is_duplicate(job_url):
+            keyed = card if card.get('data-jk') else card.select_one('[data-jk]')
+            query = parse_qs(urlsplit(title_elem.get('href', '')).query)
+            job_key = title_elem.get('data-jk') or (keyed.get('data-jk') if keyed else None)
+            job_key = job_key or query.get('jk', query.get('vjk', [None]))[0]
+            if not job_key:
+                anchor_id = title_elem.get('id', '')
+                job_key = anchor_id[4:] if anchor_id.startswith('job_') else None
+            if not job_key or not re.fullmatch(r'[A-Za-z0-9_-]+', job_key):
+                self._skip('missing_job_key', 'No job ID on the title, card, href, or anchor ID')
+                return None
+            job_url = urljoin(base_url, f'viewjob?jk={job_key}')
+            if job_url in self.seen_job_urls or self.duplicate_checker.is_duplicate(job_url):
+                self.stats['duplicates'] += 1
+                self.logger.info('Already saved: %s', job_url)
                 return None
 
             company_name = self._get_element_text(card, self.SELECTORS['company_name'])
             location = self._get_element_text(card, self.SELECTORS['company_location'])
-            
+
             if location == "N/A":
                 location_elements = card.select('[class*="location"], [class*="Location"]')
                 if location_elements:
@@ -323,7 +344,9 @@ class Scraper:
                 self._sleep(self.config.RETRY_DELAYS[retry])
 
             if not job_desc:
-                return None
+                self.stats['missing_description'] += 1
+                self.logger.warning("Description unavailable for %s; saving the listing with a blank description", job_url)
+                job_desc = ""
 
             return {
                 'post_date': self._extract_post_date(card),
@@ -339,9 +362,11 @@ class Scraper:
         except ScrapingStopped:
             raise
         except Exception as e:
-            self.logger.error(f"Error extracting job data: {str(e)}")
+            if "blocked" in str(e).lower():
+                raise
+            self._skip("extraction_errors", str(e))
             return None
-        
+
     def _extract_company_detail_url(self, card: BeautifulSoup, base_url: str, job_url: str) -> str:
         try:
             # First, try to extract company name from the card
@@ -351,7 +376,7 @@ class Scraper:
                 if company_element:
                     company_name = company_element.get_text(strip=True)
                     break
-            
+
             # If company name not found, try alternative methods
             if not company_name:
                 # Try extracting from selectors
@@ -361,41 +386,43 @@ class Scraper:
                         # Extract company name from the link text or title
                         company_name = company_link.get_text(strip=True)
                         break
-            
+
             # If still no company name, try extracting from job URL
             if not company_name and 'viewjob' in job_url:
                 company_key = job_url.split('?jk=')[-1]
                 # Fallback to job-based company URL
                 return urljoin(base_url, f"company?from=serp&company={company_key}")
-            
+
             # Generate company URL using the new method
             if company_name and company_name != "N/A":
                 # Create a slug similar to the get_company_url method
-                company_slug = ''.join(c for c in company_name.lower() 
+                company_slug = ''.join(c for c in company_name.lower()
                                     if c.isalnum() or c in ' -')
                 company_slug = company_slug.replace(' ', '-')
                 company_url = f"{base_url}cmp/{quote_plus(company_slug)}"
                 return company_url
-            
+
             return "N/A"
-        
+
         except ScrapingStopped:
             raise
         except Exception as e:
             self.logger.error(f"Error extracting company detail URL: {str(e)}")
             return "N/A"
-    
+
     def _get_job_description(self, url: str) -> Optional[str]:
         try:
             if html := self.cf_handler.get_page(url):
                 soup = BeautifulSoup(html, 'html.parser')
-                return self._get_element_text(soup, self.SELECTORS['job_description'])
+                return self._get_element_text(soup, self.SELECTORS['job_description'], default='')
         except ScrapingStopped:
             raise
         except Exception as e:
-            self.logger.error(f"Failed to fetch job description: {str(e)}")
+            if "blocked" in str(e).lower():
+                raise
+            self.logger.warning(f"Failed to fetch job description: {str(e)}")
         return None
-        
+
     def _extract_post_date(self, card: BeautifulSoup) -> str:
         try:
             date_text = self._get_element_text(card, self.SELECTORS['post_date'])
@@ -408,13 +435,13 @@ class Scraper:
 
             if 'day' in date_text and 'ago' in date_text:
                 if days := int(''.join(filter(str.isdigit, date_text))):
-                    return time.strftime('%Y-%m-%d', 
+                    return time.strftime('%Y-%m-%d',
                                        time.localtime(time.time() - (days * 86400)))
 
             return time.strftime('%Y-%m-%d')
         except Exception:
             return time.strftime('%Y-%m-%d')
-    
+
 
     def close(self) -> None:
         try:

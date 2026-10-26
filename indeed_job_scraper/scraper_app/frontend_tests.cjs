@@ -57,5 +57,13 @@ function harness(fetch) {
     app=harness(async () => json(null));
     await app.submit();
     assert.match(app.elements['scrape-warning-row'].textContent,/invalid result/);
-    console.log('7 frontend scenarios passed, including live count/warnings, Stop, and partial CSV download.');
+    app=harness(async () => json({total_jobs:0,status:'completed',message:'No new jobs: recognized listings are already saved.',stats:{found:3,duplicates:3},available_jobs:3,download_url:'/download/?keyword=Python'}));
+    await app.submit();
+    assert.match(app.elements['scrape-progress-row'].textContent,/Found: 3.*Duplicates: 3.*already saved/);
+    assert.equal(app.elements.downloadResultsBtn.hidden,false);
+    app=harness(async url => String(url).includes('/progress/') ? json({scraped:0,stats:{found:4,missing_job_key:4},status:'failed'}) : json({error:'Listings were found but could not be saved.'},422));
+    await app.submit();
+    assert.match(app.elements['scrape-progress-row'].textContent,/Found: 4.*Skipped\/errors: 4/);
+    assert.match(app.elements['scrape-warning-row'].textContent,/could not be saved/);
+    console.log('9 frontend scenarios passed, including duplicate-only results and parser-failure counters.');
 })().catch(error=>{console.error(error);process.exitCode=1;});

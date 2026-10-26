@@ -174,3 +174,100 @@ class ProgressAndStopTests(TestCase):
                 scraper._process_job_cards(soup, 'https://www.indeed.com/', 'Python', 'United States')
         self.assertEqual(scraper.total_jobs, 1)
         self.assertTrue(JobPosting.objects.filter(job_url=data['job_url']).exists())
+
+
+class ListingParsingTests(TestCase):
+    def scraper(self):
+        from .utils.Scraper import Scraper
+        with patch.object(Scraper, '_initialize_driver'):
+            result = Scraper()
+        result._sleep = Mock()
+        result.cf_handler = Mock()
+        return result
+
+    def test_job_key_fallbacks_and_missing_description(self):
+        from bs4 import BeautifulSoup
+        samples = [
+            '<div data-jk="card123"><h2 class="jobTitle"><a>Python developer</a></h2></div>',
+            '<div><h2 class="jobTitle"><a href="/rc/clk?jk=href123">Python developer</a></h2></div>',
+            '<div><a class="jcs-JobTitle" id="job_anchor123">Python developer</a></div>',
+            '<div><a class="jcs-JobTitle" href="/viewjob?vjk=vjk123">Python developer</a></div>',
+        ]
+        for html in samples:
+            scraper = self.scraper()
+            with patch.object(scraper, '_get_job_description', return_value=''):
+                row = scraper._extract_job_data(BeautifulSoup(html, 'html.parser').div, 'https://www.indeed.com/', 'Python', 'United States')
+            self.assertIsNotNone(row)
+            self.assertEqual(row['job_description'], '')
+            self.assertEqual(scraper.stats['missing_description'], 1)
+
+    def test_missing_identity_has_specific_reason(self):
+        from bs4 import BeautifulSoup
+        scraper = self.scraper()
+        card = BeautifulSoup('<div><h2 class="jobTitle"><a>Python</a></h2></div>', 'html.parser').div
+        self.assertIsNone(scraper._extract_job_data(card, 'https://www.indeed.com/', 'Python', 'United States'))
+        self.assertEqual(scraper.stats['missing_job_key'], 1)
+
+    def test_overlapping_selectors_save_once(self):
+        from bs4 import BeautifulSoup
+        from .models import JobPosting
+        scraper = self.scraper()
+        soup = BeautifulSoup('<div class="job_seen_beacon cardOutline"><h2 class="jobTitle"><a data-jk="unique123">Python</a></h2></div>', 'html.parser')
+        with patch.object(scraper, '_get_job_description', return_value='Description'):
+            count = scraper._process_job_cards(soup, 'https://www.indeed.com/', 'Python', 'United States')
+        self.assertEqual(count, 1)
+        self.assertEqual(scraper.stats['found'], 1)
+        self.assertEqual(JobPosting.objects.count(), 1)
+
+    def test_duplicate_page_does_not_prevent_next_page(self):
+        scraper = self.scraper()
+        page = '<div class="job_seen_beacon">listing</div><a aria-label="Next" href="/jobs?q=Python&start=10">Next</a>'
+        final = '<div class="job_seen_beacon">new listing</div>'
+        scraper.cf_handler.get_page.side_effect = [page, final]
+        with patch.object(scraper, '_process_job_cards', side_effect=[0, 1]):
+            scraper._scrape_country('https://www.indeed.com/', 'Python', 'United States')
+        self.assertEqual(scraper.cf_handler.get_page.call_count, 2)
+
+    def test_pagination_does_not_choose_previous_page(self):
+        from bs4 import BeautifulSoup
+        scraper = self.scraper()
+        soup = BeautifulSoup('<nav role="navigation"><a href="/jobs?start=0">Previous</a><a href="/jobs?start=20">3</a></nav>', 'html.parser')
+        self.assertEqual(scraper._has_next_page(soup, 'https://www.indeed.com/jobs?start=10'), '/jobs?start=20')
+
+    def test_unknown_markup_is_not_reported_as_empty_search(self):
+        from bs4 import BeautifulSoup
+        scraper = self.scraper()
+        with self.assertRaisesRegex(RuntimeError, 'unsupported page layout'):
+            scraper._validate_page_content(BeautifulSoup('<main>Unrecognized content</main>', 'html.parser'), 'United States')
+        self.assertFalse(scraper._validate_page_content(BeautifulSoup('<main>No jobs found</main>', 'html.parser'), 'United States'))
+        self.assertEqual(scraper.stats['empty_pages'], 1)
+
+    def test_dynamic_cards_use_fresh_dom(self):
+        scraper = self.scraper()
+        scraper.cf_handler.driver.page_source = '<div class="job_seen_beacon">Loaded later</div>'
+        soup = scraper._listing_soup('<body>Loading</body>')
+        self.assertIn('Loaded later', soup.get_text())
+
+    @patch('scraper_app.views.Scraper')
+    def test_parse_failure_is_not_successful_zero_results(self, scraper):
+        scraper.return_value.scrape_jobs.return_value = (0, {})
+        scraper.return_value.errors = []
+        scraper.return_value.stats = {'found': 4, 'missing_job_key': 4}
+        response = self.client.post('/scrape/', {'keyword': 'Python', 'country': 'United States'}, HTTP_X_REQUESTED_WITH='XMLHttpRequest')
+        self.assertEqual(response.status_code, 422)
+        self.assertIn('Listings were found', response.json()['error'])
+        self.assertEqual(response.json()['stats']['missing_job_key'], 4)
+
+    @patch('scraper_app.views.Scraper')
+    def test_duplicates_are_identified_and_saved_results_downloadable(self, scraper):
+        from .models import JobPosting
+        JobPosting.objects.create(title='Existing job', company_name='Company', company_location='Remote', job_url='https://www.indeed.com/viewjob?jk=existing', job_description='Description', post_date='2026-10-26', search_term='Python', country='United States')
+        scraper.return_value.scrape_jobs.return_value = (0, {})
+        scraper.return_value.errors = []
+        scraper.return_value.stats = {'found': 1, 'duplicates': 1}
+        response = self.client.post('/scrape/', {'keyword': 'Python', 'country': 'United States'}, HTTP_X_REQUESTED_WITH='XMLHttpRequest')
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertIn('already saved', data['message'])
+        self.assertEqual(data['available_jobs'], 1)
+        self.assertContains(self.client.get(data['download_url']), 'Existing job')

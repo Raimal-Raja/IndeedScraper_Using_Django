@@ -1,9 +1,3 @@
----
-noteId: "b91497a0d11c11f197cf2541fe3bbbe5"
-tags: []
-
----
-
 # Live scraping progress and Stop
 
 The scrape page displays exactly two live status rows: the number of jobs saved
@@ -37,3 +31,27 @@ Verification: 18 Django regressions, including immediate-stop record preservatio
 and 7 JavaScript scenarios. Run `python manage.py test scraper_app` from
 indeed_job_scraper, and run the frontend checks with
 `node scraper_app/frontend_tests.cjs`.
+
+## Listing extraction and zero-new-results handling
+
+Recognized job IDs can come from the title link's data-jk, a card's data-jk,
+the jk/vjk URL query, or a job_ anchor ID. Listing extraction waits for the current
+DOM when cards have not yet loaded. Only one matching card selector family is
+processed, avoiding duplicate work caused by overlapping CSS selectors.
+
+A missing description no longer discards a valid title/ID: the record is saved
+with an empty description and a warning. Repeated database records are counted
+as duplicates, not new saves. Duplicate-only pages do not stop pagination;
+visited-page detection prevents loops and numbered pagination only advances.
+The implicit last-24-hours search filter has been removed.
+
+Two status rows include found, saved, duplicate and skipped/error counts. All
+recognized duplicates are reported as already saved, with a CSV link when the
+current search has saved database records. If cards were found but none could
+be parsed or saved, the request reports a failure with skip counts rather than
+claiming there were no matching jobs. An unknown page layout is an error, not
+an empty search. Only explicit no-results text establishes an empty listing.
+
+Verification for these changes: 27 Django tests and 9 frontend scenarios, using
+fixtures and mocked source/browser operations. This does not establish live
+Indeed availability or bypass its source access controls.

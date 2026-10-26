@@ -26,7 +26,7 @@ def create_run(run_id):
                 raise ValueError('Too many active searches. Stop an existing search first.')
             del _runs[finished[0]]
         event = threading.Event()
-        _runs[run_id] = dict(status='starting', scraped=0, activity='Starting browser...', warning='', event=event, updated=time.monotonic(), download_url=None)
+        _runs[run_id] = dict(status='starting', scraped=0, activity='Starting browser...', warning='', event=event, updated=time.monotonic(), download_url=None, stats={})
         return event
 
 def update_run(run_id, **values):
@@ -54,9 +54,10 @@ def stop_run(run_id):
         return get_run(run_id)
 
 class ProgressHandler(logging.Handler):
-    def __init__(self, run_id, count):
+    def __init__(self, run_id, count, stats=None):
         super().__init__(logging.INFO)
         self.run_id, self.count = run_id, count
+        self.stats = stats
         self.thread_id = threading.get_ident()
 
     def emit(self, record):
@@ -65,6 +66,10 @@ class ProgressHandler(logging.Handler):
         message = record.getMessage()
         count = self.count()
         values = {'scraped': count if isinstance(count, int) else 0}
+        if self.stats:
+            stats = self.stats()
+            if isinstance(stats, dict):
+                values['stats'] = dict(stats)
         if record.levelno >= logging.WARNING:
             values['warning'] = message
         else:

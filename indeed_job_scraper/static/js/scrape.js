@@ -5,16 +5,19 @@
     const download = document.getElementById('downloadResultsBtn');
     const progress = document.getElementById('scrape-progress-row');
     const warning = document.getElementById('scrape-warning-row');
-    let active = false, runId = null, timer = null, polling = false, saved = 0, latestWarning = '';
+    let active = false, runId = null, timer = null, polling = false, saved = 0, latestWarning = '', latestStats = {};
     const placeholder = '00000000-0000-0000-0000-000000000000';
     const endpoint = key => form.dataset[key].replace(placeholder, runId);
     const headers = { 'X-Requested-With': 'XMLHttpRequest', 'Accept': 'application/json' };
     function show(data) {
         if (Number.isInteger(data.scraped)) saved = data.scraped;
         if (data.warning) latestWarning = data.warning;
-        progress.textContent = `Saved: ${saved} | ${data.activity || data.status || 'Scraping...'}`;
+        if (data.stats) latestStats = data.stats;
+        const stats = latestStats;
+        const counts = `Found: ${stats.found || 0} | Saved: ${saved} | Duplicates: ${stats.duplicates || 0} | Skipped/errors: ${(stats.missing_title || 0) + (stats.missing_job_key || 0) + (stats.extraction_errors || 0) + (stats.database_errors || 0)}`;
+        progress.textContent = `${counts} | ${data.activity || data.status || 'Scraping...'}`;
         warning.textContent = `Warnings: ${latestWarning || 'None'}`;
-        if (data.download_url && saved > 0) {
+        if (data.download_url && (saved > 0 || data.available_jobs > 0)) {
             const url = new URL(data.download_url, window.location.href);
             if (url.origin !== window.location.origin) throw new Error('Invalid download URL.');
             download.href = url.href;
@@ -66,7 +69,7 @@
         event.preventDefault();
         if (active) return;
         active = true;
-        saved = 0; latestWarning = '';
+        saved = 0; latestWarning = ''; latestStats = {};
         runId = crypto.randomUUID();
         start.disabled = true; stop.disabled = true; download.hidden = true;
         document.getElementById('logging-area').style.display = 'block';
@@ -78,7 +81,7 @@
             const data = await parse(await fetch(form.action, { method: 'POST', body, headers, credentials: 'same-origin' }));
             if (!Number.isInteger(data.total_jobs) || data.total_jobs < 0) throw new Error('The server returned an invalid job count.');
             active = false;
-            show({ scraped: data.total_jobs, activity: data.status === 'stopped' ? 'Stopped. Saved records are ready to download.' : data.total_jobs ? 'Scraping complete. CSV is ready to download.' : 'Complete. No matching jobs saved.', warning: data.warning, download_url: data.download_url });
+            show({ scraped: data.total_jobs, activity: data.status === 'stopped' ? 'Stopped. Saved records are ready to download.' : data.message || (data.total_jobs ? 'Scraping complete. CSV is ready to download.' : 'Complete. No new jobs saved.'), warning: data.warning, download_url: data.download_url, stats: data.stats, available_jobs: data.available_jobs });
         } catch (error) {
             // Recover the saved count/download when the request failed after saving records.
             try {

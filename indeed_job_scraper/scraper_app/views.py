@@ -37,7 +37,7 @@ def start_scraping(request):
     scraper = None
     app_logger = logging.getLogger('scraper_app')
     app_logger.setLevel(logging.INFO)
-    handler = ProgressHandler(run_id, lambda: getattr(scraper, 'total_jobs', 0))
+    handler = ProgressHandler(run_id, lambda: getattr(scraper, 'total_jobs', 0), lambda: getattr(scraper, 'stats', {}))
     app_logger.addHandler(handler)
     def download_url():
         return reverse('download_results') + '?' + urlencode({'keyword': keyword, 'country': country})
@@ -47,18 +47,39 @@ def start_scraping(request):
             raise ScrapingStopped()
         update_run(run_id, status='running', activity=f'Searching {keyword} in {country}')
         total_jobs, blocked_domains = scraper.scrape_jobs({country: settings.JOB_DOMAINS[country]}, keyword)
-        if not total_jobs and (blocked_domains or getattr(scraper, 'errors', [])):
-            message = 'The job source blocked access or could not be reached. Check the server logs before retrying.'
-            update_run(run_id, status='failed', activity='Scraping could not continue', warning=message)
+        raw_stats = getattr(scraper, 'stats', {})
+        stats = dict(raw_stats) if isinstance(raw_stats, dict) else {}
+        failed_cards = sum(stats.get(key, 0) for key in ('missing_title', 'missing_job_key', 'extraction_errors', 'database_errors'))
+        available = JobPosting.objects.filter(search_term=keyword, country=country).count()
+        summary = (f"Found: {stats.get('found', 0)} | Saved: {total_jobs} | "
+                   f"Duplicates: {stats.get('duplicates', 0)} | Skipped/errors: {failed_cards} | "
+                   f"Missing descriptions: {stats.get('missing_description', 0)}")
+        if not total_jobs and (blocked_domains or getattr(scraper, 'errors', []) or failed_cards):
+            if blocked_domains:
+                message = 'The job source blocked access. ' + summary
+            elif failed_cards:
+                message = 'Listings were found but could not be saved. ' + summary
+            else:
+                detail = str(scraper.errors[0]).splitlines()[0][:240]
+                message = 'Collection failed before saving new jobs: ' + detail
+            update_run(run_id, status='failed', activity='Collection failed; see the warning row', warning=message, stats=stats, available_jobs=available, download_url=download_url() if available else None)
             if ajax:
-                return JsonResponse({'error': message, 'run_id': run_id}, status=502)
+                return JsonResponse({'error': message, 'run_id': run_id, 'stats': stats}, status=422 if failed_cards else 502)
             form.add_error(None, message)
             return render(request, 'results.html', {'form': form}, status=502)
-        update_run(run_id, status='completed', scraped=total_jobs, activity='Scraping complete', download_url=download_url() if total_jobs else None)
+        if total_jobs:
+            message = 'Scraping complete. CSV is ready to download.'
+        elif stats.get('duplicates'):
+            message = 'No new jobs: recognized listings are already saved.'
+        else:
+            message = 'The source returned no matching listings.'
+        warning = summary if failed_cards or stats.get('missing_description') else ('Some source pages were unavailable. ' + summary if blocked_domains or getattr(scraper, 'errors', []) else '')
+        result_url = download_url() if total_jobs or available else None
+        update_run(run_id, status='completed', scraped=total_jobs, activity=message, warning=warning, stats=stats, available_jobs=available, download_url=result_url)
         if ajax:
-            return JsonResponse({'run_id': run_id, 'status': 'completed', 'total_jobs': total_jobs, 'keyword': keyword, 'country': country,
-                                 'download_url': reverse('download_results') + '?' + urlencode({'keyword': keyword, 'country': country}) if total_jobs else None,
-                                 'warning': 'Some source pages were unavailable.' if blocked_domains or getattr(scraper, 'errors', []) else None})
+            return JsonResponse({'run_id': run_id, 'status': 'completed', 'message': message, 'stats': stats,
+                                 'total_jobs': total_jobs, 'available_jobs': available, 'keyword': keyword, 'country': country,
+                                 'download_url': result_url, 'warning': warning})
         return render(request, 'results.html', {'form': form, 'total_jobs': total_jobs, 'keyword': keyword, 'country': country})
     except ScrapingStopped:
         count = getattr(scraper, 'total_jobs', 0)
@@ -101,29 +122,29 @@ def download_csv(request, keyword=None, country=None):
         return JsonResponse({'error': 'Invalid download parameters.'}, status=400)
     keyword, country = form.cleaned_data['keyword'], form.cleaned_data['country']
     jobs = JobPosting.objects.filter(
-        search_term=keyword, 
+        search_term=keyword,
         country=country
     )
-    
+
     response = HttpResponse(content_type='text/csv')
     response['Content-Disposition'] = 'attachment; filename="jobs.csv"'
-    
+
     writer = csv.writer(response)
     writer.writerow([
-        'Title', 'Company', 'Location', 
-        'Job URL', 'Company URL', 
+        'Title', 'Company', 'Location',
+        'Job URL', 'Company URL',
         'Post Date', 'Description'
     ])
-    
+
     for job in jobs:
         writer.writerow([
-            job.title, 
-            job.company_name, 
+            job.title,
+            job.company_name,
             job.company_location,
-            job.job_url, 
+            job.job_url,
             job.company_detail_url,
-            job.post_date, 
+            job.post_date,
             job.job_description
         ])
-    
+
     return response
