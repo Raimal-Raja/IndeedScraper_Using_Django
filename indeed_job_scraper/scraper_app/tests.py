@@ -256,6 +256,7 @@ class ListingParsingTests(ExportIsolationMixin, TestCase):
     def test_dynamic_cards_use_fresh_dom(self):
         scraper = self.scraper()
         scraper.cf_handler.driver.page_source = '<div class="job_seen_beacon">Loaded later</div>'
+        scraper.cf_handler.inspect_current_page.return_value = scraper.cf_handler.driver.page_source
         soup = scraper._listing_soup('<body>Loading</body>')
         self.assertIn('Loaded later', soup.get_text())
 
@@ -713,3 +714,53 @@ class ManualVerificationTests(ExportIsolationMixin, TestCase):
                 first.close()
             second=CloudflareHandler(verification_callback=Mock())
             second.close()
+
+
+class BrazilReadinessTests(ExportIsolationMixin, TestCase):
+    def test_brazil_uses_current_host(self):
+        from django.conf import settings
+        self.assertEqual(settings.JOB_DOMAINS['Brazil'],'https://br.indeed.com/')
+
+    def test_late_login_enters_manual_pause_instead_of_generic_timeout(self):
+        from .utils.Scraper import Scraper
+        from bs4 import BeautifulSoup
+        with patch.object(Scraper,'_initialize_driver'):
+            scraper=Scraper(verification_callback=Mock(return_value=True))
+        scraper.cf_handler=Mock()
+        scraper.cf_handler.driver.current_url='https://br.indeed.com/jobs?q=Python'
+        scraper.cf_handler.inspect_current_page.side_effect=LoginRequired('Login appeared after loading')
+        scraper.cf_handler._read_page.return_value='<div class="job_seen_beacon">Verified result</div>'
+        soup=scraper._listing_soup('<body>Loading</body>')
+        self.assertIn('Verified result',soup.get_text())
+        scraper.verification_callback.assert_called_once()
+        scraper.cf_handler._read_page.assert_called_once()
+
+    def test_unknown_page_captures_evidence_and_offers_manual_inspection(self):
+        from .utils.Scraper import Scraper
+        from selenium.common.exceptions import TimeoutException
+        with patch.object(Scraper,'_initialize_driver'):
+            scraper=Scraper(verification_callback=Mock(return_value=True))
+        scraper.cf_handler=Mock()
+        scraper.cf_handler.driver.current_url='https://br.indeed.com/jobs?q=Python'
+        scraper.cf_handler.driver.find_elements.return_value=[]
+        scraper.cf_handler.driver.title='Loading'
+        scraper.cf_handler._capture_diagnostic.return_value='source.json'
+        scraper.cf_handler._read_page.return_value='<div class="job_seen_beacon">Result after Resume</div>'
+        with patch('scraper_app.utils.Scraper.WebDriverWait') as wait:
+            wait.return_value.until.side_effect=TimeoutException()
+            soup=scraper._listing_soup('<body>Unrecognized</body>')
+        self.assertIn('Result after Resume',soup.get_text())
+        scraper.cf_handler._capture_diagnostic.assert_called_once()
+        self.assertIn('source.json',scraper.verification_callback.call_args.args[1])
+
+    def test_cleanup_waits_for_owned_driver_process(self):
+        from .utils.cloudflare_handler import CloudflareHandler
+        browser=CloudflareHandler.__new__(CloudflareHandler)
+        driver=Mock()
+        driver.service.process.poll.return_value=None
+        browser.driver=driver
+        browser._driver_copy=Mock()
+        browser._profile_lock_held=False
+        browser.close()
+        driver.quit.assert_called_once()
+        driver.service.process.wait.assert_called_once_with(timeout=3)

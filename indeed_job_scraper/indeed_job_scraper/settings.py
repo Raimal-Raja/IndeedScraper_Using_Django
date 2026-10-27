@@ -137,7 +137,7 @@ JOB_DOMAINS = {
         "United Kingdom": "https://www.indeed.co.uk/",
         "France": "https://www.indeed.fr/",
         "Italy": "https://it.indeed.com/",
-        "Brazil": "https://www.indeed.com.br/",
+        "Brazil": "https://br.indeed.com/",
         "Canada": "https://ca.indeed.com/",
         "Russia": "https://ru.indeed.com/",
         "South Korea": "https://kr.indeed.com/",

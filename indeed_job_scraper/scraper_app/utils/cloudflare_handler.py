@@ -123,7 +123,7 @@ class CloudflareHandler:
             if uc is not None:
                 # UC patches its driver; never modify the standard driver's configured binary.
                 if driver_path:
-                    self._driver_copy = tempfile.TemporaryDirectory(prefix='indeed-uc-driver-')
+                    self._driver_copy = tempfile.TemporaryDirectory(prefix='indeed-uc-driver-', ignore_cleanup_errors=True)
                     copied = Path(self._driver_copy.name) / Path(driver_path).name
                     shutil.copy2(driver_path, copied)
                     driver_path = str(copied)
@@ -197,6 +197,9 @@ class CloudflareHandler:
         logger.info('Accessing %s', url)
         self.driver.get(url)
         WebDriverWait(self.driver, 20).until(lambda driver: driver.find_elements(By.TAG_NAME, 'body'))
+        return self.inspect_current_page(url)
+
+    def inspect_current_page(self, url):
         title = self.driver.title
         visible = self.driver.find_element(By.TAG_NAME, 'body').text
         parts = urlsplit(self.driver.current_url)
@@ -230,6 +233,13 @@ class CloudflareHandler:
             if self.driver is not None:
                 driver, self.driver = self.driver, None
                 driver.quit()
+                service = getattr(driver, 'service', None)
+                process = getattr(service, 'process', None)
+                if process is not None and process.poll() is None:
+                    try:
+                        process.wait(timeout=3)
+                    except Exception:
+                        logger.warning('Driver process is still exiting; temporary cleanup will be best effort')
         finally:
             try:
                 if self._driver_copy is not None:

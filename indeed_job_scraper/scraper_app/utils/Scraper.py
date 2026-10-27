@@ -131,7 +131,7 @@ class Scraper:
         except Exception as e:
             self.logger.error(f"Error extracting element text: {str(e)}")
             return default
-    def _listing_soup(self, html):
+    def _listing_soup(self, html, allow_manual=True):
         """Wait for dynamic cards, then parse the current DOM instead of an old snapshot."""
         def ready(source):
             soup = BeautifulSoup(source, 'html.parser')
@@ -144,10 +144,24 @@ class Scraper:
         soup = ready(html)
         if soup is not None:
             return soup
+        driver = self.cf_handler.driver
+        url = driver.current_url
         try:
-            return WebDriverWait(self.cf_handler.driver, 20).until(lambda driver: ready(driver.page_source))
+            return WebDriverWait(driver, 20).until(
+                lambda browser: ready(self.cf_handler.inspect_current_page(browser.current_url)))
+        except (LoginRequired, SourceAccessBlocked) as exc:
+            if allow_manual and self.verification_callback and self.verification_callback(url, str(exc)):
+                return self._listing_soup(self.cf_handler._read_page(url), allow_manual=False)
+            raise
         except TimeoutException as exc:
-            raise RuntimeError('Listings did not load or the page layout is unsupported; this is not a confirmed empty search') from exc
+            body = driver.find_elements(By.TAG_NAME, 'body')
+            diagnostic = self.cf_handler._capture_diagnostic(url, 'listing readiness timeout', driver.title, body[0].text if body else '')
+            message = 'Listings did not load or the page layout is unsupported; this is not a confirmed empty search'
+            if diagnostic:
+                message += f' [diagnostic: {diagnostic}]'
+            if allow_manual and self.verification_callback and self.verification_callback(url, message + '. Inspect the open Chrome page, then Resume.'):
+                return self._listing_soup(self.cf_handler._read_page(url), allow_manual=False)
+            raise RuntimeError(message) from exc
 
     def _has_next_page(self, soup, current_url=None):
         for selector in self.SELECTORS['next_page']:

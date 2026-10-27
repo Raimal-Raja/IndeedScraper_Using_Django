@@ -251,3 +251,24 @@ claim successful human verification or full-description retrieval on live Indeed
 Validation for the manual flow: 60 Django tests and 10 frontend scenarios pass.
 Live Indeed description retrieval after a real human verification has not been
 confirmed; the application now provides the interaction needed to attempt it.
+
+## Brazil route and late-rendered source state
+
+Brazil now uses https://br.indeed.com/. In the live route check, the legacy
+www.indeed.com.br search redirected to br.indeed.com/jobs without the keyword
+query. The direct current hostname preserved the keyword query. Both live checks
+returned Request Blocked / Blocked - Indeed.com with no listing cards, so changing
+the hostname is not claimed to remove source access restrictions.
+
+Listing-readiness waits now inspect the current page rather than only looking
+for English result markers in raw HTML. A login/challenge appearing after initial
+navigation is classified, captured, and offered to the enabled manual-verification
+callback. A remaining unknown-layout timeout also saves source diagnostics and
+allows one explicit manual inspection/Resume before failing. No empty-search or
+successful scraping claim is made for unrecognized content.
+
+UC temporary driver cleanup waits briefly for its owned process to exit and
+performs best-effort temporary directory cleanup on Windows, where a recently
+closed driver binary can remain locked. It does not kill other Chrome processes.
+Validation: 64 Django tests and 10 frontend scenarios, with source access checked
+separately. The Brazil production data and session profile are not modified by tests.
