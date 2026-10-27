@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-10-27T02:31:31+05:00",
+  "reason": "login URL/title",
+  "requested_url": "https://kr.indeed.com/jobs?q=Python+developer&start=10",
+  "final_url": "https://secure.indeed.com/auth",
+  "title": "로그인 | 인디드 계정",
+  "visible_text_excerpt": "채용공고를 두 페이지 이상 보려면 계정을 만들거나 로그인하세요.\n아래의 '계속' 버튼 중 하나를 클릭하면, 인디드의 이용약관을 이해하고 이에 동의하는 것으로 간주합니다. 또한 쿠키 및 개인정보 취급방침에 동의하게 됩니다. 인디드로부터 마케팅 메시지를 수신하게 되며, 인디드가 보낸 메시지에서 수신 거부 링크를 클릭하거나 약관에 명시된 방법을 언제든 메시지 수신을 거부할 수 있습니다.\nApple 계정으로 로그인\n또는\n* 표시가 있는 모든 필드는 필수 사항입니다.\n이메일 주소 *\n계속\n홈으로 이동\nScreen changed. Please enter your email\n© 2026 Indeed\nIndeed의 접근성\n개인정보 센터 및 Ad Choices\n약관",
+  "screenshot": "page_20261027_023131_448462_e54e609c.png",
+  "backend": "undetected"
+}

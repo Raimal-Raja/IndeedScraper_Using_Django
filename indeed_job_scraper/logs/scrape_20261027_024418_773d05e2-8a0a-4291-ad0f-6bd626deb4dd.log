@@ -1,0 +1,27 @@
+2026-10-27 02:44:19 +0500 | INFO | scraper_app.utils.cloudflare_handler | Using cached matching ChromeDriver for Chrome 155: C:\Users\Professor\.cache\selenium\chromedriver\win64\155.0.8059.84\chromedriver.exe
+2026-10-27 02:44:22 +0500 | INFO | scraper_app.utils.cloudflare_handler | Browser backend: undetected | headless: False
+2026-10-27 02:44:22 +0500 | INFO | scraper_app.utils.Scraper | Chrome driver initialized successfully
+2026-10-27 02:44:22 +0500 | INFO | scraper_app.utils.Scraper | Processing page 1 for Brazil
+2026-10-27 02:44:22 +0500 | INFO | scraper_app.utils.cloudflare_handler | Accessing https://www.indeed.com.br/jobs?q=Python+developer&l=
+2026-10-27 02:44:49 +0500 | ERROR | scraper_app.utils.Scraper | Error processing Brazil page 1
+Traceback (most recent call last):
+  File "D:\GitHub\IndeedScraper_Using_Django\indeed_job_scraper\scraper_app\utils\Scraper.py", line 148, in _listing_soup
+    return WebDriverWait(self.cf_handler.driver, 20).until(lambda driver: ready(driver.page_source))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Professor\AppData\Local\Programs\Python\Python312\Lib\site-packages\selenium\webdriver\support\wait.py", line 146, in until
+    raise TimeoutException(message, screen, stacktrace)
+selenium.common.exceptions.TimeoutException: Message: 
+
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "D:\GitHub\IndeedScraper_Using_Django\indeed_job_scraper\scraper_app\utils\Scraper.py", line 296, in _scrape_country
+    soup = self._listing_soup(html)
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\GitHub\IndeedScraper_Using_Django\indeed_job_scraper\scraper_app\utils\Scraper.py", line 150, in _listing_soup
+    raise RuntimeError('Listings did not load or the page layout is unsupported; this is not a confirmed empty search') from exc
+RuntimeError: Listings did not load or the page layout is unsupported; this is not a confirmed empty search
+2026-10-27 02:44:50 +0500 | ERROR | scraper_app.utils.Scraper | Error scraping Brazil: Listings did not load or the page layout is unsupported; this is not a confirmed empty search
+2026-10-27 02:44:50 +0500 | INFO | scraper_app.utils.Scraper | Found: 0 | Saved: 0 | Updated: 0 | Duplicates: 0 | Missing title/ID: 0 | Extraction/database errors: 0 | Missing full descriptions: 0 | Pages: 0
+2026-10-27 02:44:50 +0500 | ERROR | scraper_app.utils.Scraper | Error closing Chrome driver: [WinError 5] Access is denied: 'C:\\Users\\PROFES~1\\AppData\\Local\\Temp\\indeed-uc-driver-i2885oq0\\chromedriver.exe'
