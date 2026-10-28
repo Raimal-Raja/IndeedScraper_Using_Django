@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-10-27T12:03:40+05:00",
+  "reason": "login URL/title",
+  "requested_url": "https://br.indeed.com/jobs?q=Python+developer&start=30",
+  "final_url": "https://secure.indeed.com/auth",
+  "title": "Acessar | Contas Indeed",
+  "visible_text_excerpt": "Para ver mais de uma página de vagas, acesse ou crie uma conta\nContinuar com a Apple\nContinuar com e-mail\nAo clicar abaixo em qualquer opção \"Continuar\", você entende e concorda com os Termos do Indeed, além de aceitar as nossas Políticas de Cookies e de Privacidade. Você receberá mensagens de marketing do Indeed, as quais podem ser canceladas a qualquer momento no link de cancelamento ou conforme detalhado em nossos termos.\nIr para a página inicial\n© 2026 Indeed\nAcessibilidade no Indeed\nCentro de privacidade e preferências de anúncios\nTermos",
+  "screenshot": "page_20261027_120340_241064_04bad744.png",
+  "backend": "undetected"
+}
